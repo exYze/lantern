@@ -246,7 +246,8 @@ To publish a new version:
 
 `publish` signs every desktop installer with its version bound into the signature and uploads the release
 to your hub. `github` publishes CI's builds (which have no hub address in them) as a GitHub release: it
-signs them and the Android APK on your machine, adds `release.json`, the hub archives and `SHA256SUMS`, and
+signs them and the Android APK on your machine (with the Android SDK build-tools and a JDK in `JAVA_HOME`),
+adds `release.json`, the hub archives and `SHA256SUMS`, and
 uploads them with `gh`. The signing keys never go to CI.
 
 ## Troubleshooting

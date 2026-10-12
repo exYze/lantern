@@ -15,12 +15,14 @@
 //   LANTERN_UPDATER_KEY       updater signing key (default ~/.lantern/updater.key)
 //   LANTERN_ANDROID_SIGNING   Android signing properties (default ~/.lantern/android-signing.properties)
 //   GH                        GitHub CLI to use for fetch-ci and github (default gh)
+//   JAVA_HOME                 a JDK, for apksigner when github signs the APK (with the Android SDK build-tools)
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { gzipSync } from "node:zlib";
 
 const root = resolve(import.meta.dirname, "..");
 loadEnvLocal();
@@ -263,6 +265,41 @@ function signApk(unsigned, dest) {
   run(`"${bin("apksigner")}"`, ["verify", `"${dest}"`], { shell: true });
 }
 
+/** Files in the hub archive that must be executable (a tar made on Windows would lose the bit). */
+const EXECUTABLE = new Set(["lantern-hub", "install.sh", "lantern-hub-fetch-release"]);
+
+/** A .tar.gz with explicit file modes, written here so it doesn't depend on the platform's tar. */
+function tarGz(entries) {
+  const blocks = [];
+  const mtime = Math.floor(Date.now() / 1000);
+  for (const e of entries) {
+    const dir = e.data === undefined;
+    const size = dir ? 0 : e.data.length;
+    const h = Buffer.alloc(512);
+    const field = (value, offset, length) => h.write(value, offset, length, "ascii");
+    const octal = (n, length) => n.toString(8).padStart(length - 1, "0") + "\0";
+    field(e.name, 0, 100);
+    field(octal(e.mode, 8), 100, 8);
+    field(octal(0, 8), 108, 8);
+    field(octal(0, 8), 116, 8);
+    field(octal(size, 12), 124, 12);
+    field(octal(mtime, 12), 136, 12);
+    field("        ", 148, 8);
+    field(dir ? "5" : "0", 156, 1);
+    field("ustar\0", 257, 6);
+    field("00", 263, 2);
+    field("root", 265, 32);
+    field("root", 297, 32);
+    let sum = 0;
+    for (const b of h) sum += b;
+    field(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8);
+    blocks.push(h);
+    if (!dir) blocks.push(e.data, Buffer.alloc((512 - (size % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks), { level: 9 });
+}
+
 /**
  * Publishes a CI run's builds as a GitHub Release for anyone to download. CI builds have
  * no hub address baked in. Update signatures and the APK signature are made here, so the
@@ -315,12 +352,12 @@ function githubRelease(runId, notes) {
     const src = findFiles(dl, (n, isDir) => isDir && n === `lantern-hub-${arch}`)[0];
     if (!src) throw new Error(`CI run ${runId} has no lantern-hub-${arch}.`);
     const name = `lantern-hub_${version}_linux-${arch}.tar.gz`;
-    const stage = join(dl, "hub-stage", arch, `lantern-hub-${version}`);
-    mkdirSync(stage, { recursive: true });
-    for (const f of readdirSync(src)) if (f !== "CLAUDE.md") copyFileSync(join(src, f), join(stage, f));
-    // Relative paths only: GNU tar on Windows reads "C:\…" as a remote host.
-    run("tar", ["-czf", name, `lantern-hub-${version}`], { cwd: resolve(stage, ".."), shell: false });
-    renameSync(join(stage, "..", name), join(out, name));
+    const top = `lantern-hub-${version}`;
+    const files = readdirSync(src)
+      .filter((f) => f !== "CLAUDE.md")
+      .sort()
+      .map((f) => ({ name: `${top}/${f}`, data: readFileSync(join(src, f)), mode: EXECUTABLE.has(f) ? 0o755 : 0o644 }));
+    writeFileSync(join(out, name), tarGz([{ name: `${top}/`, mode: 0o755 }, ...files]));
     hubFiles.push(name);
     console.log(`  → release/${version}/github/${name}`);
   }
@@ -348,7 +385,11 @@ try {
   if (command === "build") {
     const wanted = (rest[0] ?? (isWindows ? "windows,android" : process.platform === "linux" ? "linux,android" : "")).split(",").filter(Boolean);
     if (!wanted.length) throw new Error("Say what to build: windows, linux, android (macOS and iOS come from CI: fetch-ci).");
-    for (const p of wanted) ({ windows: buildWindows, linux: buildLinux, android: buildAndroid })[p]?.() ?? console.warn(`Unknown platform ${p}`);
+    const builders = { windows: buildWindows, linux: buildLinux, android: buildAndroid };
+    for (const p of wanted) {
+      if (builders[p]) builders[p]();
+      else console.warn(`Unknown platform ${p}`);
+    }
   } else if (command === "fetch-ci") {
     fetchCi(rest[0]);
   } else if (command === "publish") {
@@ -359,7 +400,7 @@ try {
     const notes = i >= 0 ? rest.splice(i, 2)[1] : undefined;
     githubRelease(rest[0], notes);
   } else {
-    console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 17).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 18).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
     process.exit(command ? 1 : 0);
   }
 } catch (e) {
