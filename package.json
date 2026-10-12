@@ -1,7 +1,7 @@
 {
   "name": "lantern",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Lantern — an open-source, cross-platform AI bot app for open-source LLMs",
   "license": "MIT",
   "type": "module",

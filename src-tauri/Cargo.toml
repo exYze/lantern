@@ -1,6 +1,6 @@
 [package]
 name = "lantern"
-version = "0.2.1"
+version = "0.2.2"
 description = "Lantern — open-source AI bots for open-source LLMs"
 authors = ["Lantern contributors"]
 license = "MIT"

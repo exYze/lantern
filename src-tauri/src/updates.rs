@@ -60,7 +60,8 @@ mod imp {
     }
 
     pub async fn install(app: &AppHandle, pending: &PendingUpdate, on_event: Channel<UpdateProgress>) -> Result<(), String> {
-        let update = pending.0.lock().map_err(err)?.take().ok_or("No update has been found yet.")?;
+        // Cloned, not taken: if the install fails, "Restart to update" can try again.
+        let update = pending.0.lock().map_err(err)?.clone().ok_or("No update has been found yet.")?;
         let mut downloaded = 0u64;
         let progress = on_event.clone();
         update

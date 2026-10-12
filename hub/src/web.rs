@@ -11,7 +11,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Map};
 use std::path::Path;
 use tower_http::services::ServeDir;
 
@@ -60,12 +60,12 @@ pub fn load_releases(dir: &Path) -> Vec<Release> {
 }
 
 /// The URL clients used to reach us, so manifests work over Tailscale and the LAN alike.
+/// Behind `tailscale serve` (proxying to a Unix socket) Host is "localhost"; the real name
+/// arrives in X-Forwarded-Host.
 fn base_url(headers: &HeaderMap) -> String {
-    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("localhost");
-    let proto = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or(if host.ends_with(".ts.net") { "https" } else { "http" });
+    let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::trim).filter(|v| !v.is_empty());
+    let host = get("x-forwarded-host").or_else(|| get(header::HOST.as_str())).unwrap_or("localhost");
+    let proto = get("x-forwarded-proto").unwrap_or(if host.ends_with(".ts.net") { "https" } else { "http" });
     format!("{proto}://{host}")
 }
 
@@ -90,18 +90,22 @@ pub fn router(hub: Shared) -> Router {
 /// Tauri's static update manifest. Keys are `{os}-{arch}[-{installer}]`; the
 /// updater picks the entry matching how the running app was installed.
 async fn manifest(State(hub): State<Shared>, headers: HeaderMap) -> Response {
-    let Some(rel) = load_releases(&hub.config.releases_dir).into_iter().next() else {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "no releases published yet" }))).into_response();
-    };
-    let base = base_url(&headers);
+    match load_releases(&hub.config.releases_dir).first() {
+        Some(rel) => Json(manifest_json(rel, &base_url(&headers))).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "no releases published yet" }))).into_response(),
+    }
+}
+
+fn manifest_json(rel: &Release, base: &str) -> serde_json::Value {
     let mut platforms = Map::new();
     let mut add = |key: &str, f: &ReleaseFile| {
-        let mut entry = json!({ "url": file_url(&base, &rel.version, &f.name) });
-        if let Some(sig) = &f.signature {
-            entry["signature"] = Value::String(sig.clone());
-        } else {
-            entry["sha256"] = Value::String(f.sha256.clone());
-        }
+        // Tauri's updater parses every entry and requires a `signature` string in each, so entries
+        // it never installs (the Android APK) get an empty one.
+        let entry = json!({
+            "url": file_url(base, &rel.version, &f.name),
+            "signature": f.signature.clone().unwrap_or_default(),
+            "sha256": f.sha256,
+        });
         platforms.insert(key.to_string(), entry);
     };
     for f in &rel.files {
@@ -129,7 +133,7 @@ async fn manifest(State(hub): State<Shared>, headers: HeaderMap) -> Response {
             _ => {}
         }
     }
-    Json(json!({ "version": rel.version, "notes": rel.notes, "pub_date": rel.pub_date, "platforms": platforms })).into_response()
+    json!({ "version": rel.version, "notes": rel.notes, "pub_date": rel.pub_date, "platforms": platforms })
 }
 
 fn esc(s: &str) -> String {
@@ -310,6 +314,45 @@ mod tests {
     fn versions_sort_numerically() {
         assert!(version_key("0.10.0") > version_key("0.9.3"));
         assert!(version_key("1.0.0-beta") == version_key("1.0.0"));
+    }
+
+    #[test]
+    fn every_manifest_entry_has_a_signature() {
+        // Tauri rejects the whole manifest if any platform entry lacks a `signature` string.
+        let file = |name: &str, platform: &str, kind: &str, sig: Option<&str>| ReleaseFile {
+            name: name.into(),
+            platform: platform.into(),
+            kind: kind.into(),
+            arch: String::new(),
+            size: 1,
+            sha256: "00".into(),
+            signature: sig.map(str::to_string),
+        };
+        let release = Release {
+            version: "1.0.0".into(),
+            notes: String::new(),
+            pub_date: "2026-01-01T00:00:00Z".into(),
+            files: vec![file("a.exe", "windows", "nsis", Some("sig")), file("a.apk", "android", "apk", None)],
+        };
+        let m = manifest_json(&release, "https://hub");
+        let platforms = m["platforms"].as_object().unwrap();
+        assert!(platforms.contains_key("windows-x86_64-nsis") && platforms.contains_key("android-universal"));
+        for (key, entry) in platforms {
+            assert!(entry["signature"].is_string(), "{key} has no signature field");
+        }
+        assert_eq!(platforms["android-universal"]["url"], "https://hub/downloads/1.0.0/a.apk");
+    }
+
+    #[test]
+    fn base_url_prefers_the_forwarded_host() {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, "localhost".parse().unwrap());
+        h.insert("x-forwarded-host", "lantern.example.ts.net".parse().unwrap());
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert_eq!(base_url(&h), "https://lantern.example.ts.net");
+        let mut lan = HeaderMap::new();
+        lan.insert(header::HOST, "10.0.0.5".parse().unwrap());
+        assert_eq!(base_url(&lan), "http://10.0.0.5");
     }
 
     #[test]
