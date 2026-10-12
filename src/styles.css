@@ -2245,6 +2245,7 @@ input[type="range"] {
 }
 
 /* Android draws the WebView edge-to-edge but doesn't report the gesture-bar inset. */
+:root[data-os="android"] .sidebar,
 :root[data-os="android"] .composer-wrap,
 :root[data-os="android"] .details-body,
 :root[data-os="android"] .page-body,
