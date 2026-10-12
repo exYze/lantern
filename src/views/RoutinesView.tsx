@@ -1,4 +1,4 @@
-import { CircleAlert, Clock, MessageSquare, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { CircleAlert, MessageSquare, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Avatar } from "../components/Avatar";
 import { RoutineEditor } from "../components/RoutineEditor";
@@ -28,7 +28,7 @@ export function RoutinesView() {
       />
       <div className="page-body">
         {!routines.length ? (
-          <Empty icon={<Clock size={36} />} title="No routines yet">
+          <Empty title="No routines yet">
             Ask a bot “every weekday at 8:00, brief me on…” or create one here.
           </Empty>
         ) : (

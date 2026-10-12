@@ -51,7 +51,7 @@ export function HubConnectForm({ onConnected }: { onConnected?: () => void }) {
     <div className="form">
       {!info ? (
         <>
-          <Field label="Hub address" hint="For example https://lantern.your-tailnet.ts.net — shown on your hub's downloads page.">
+          <Field label="Hub address" hint="For example https://lantern.your-tailnet.ts.net. It's shown on your hub's downloads page.">
             <input
               className="input mono"
               value={url}

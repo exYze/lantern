@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "lantern"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -2231,7 +2231,7 @@ dependencies = [
 
 [[package]]
 name = "lantern-tools"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "globset",
  "ignore",

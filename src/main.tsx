@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { initPlatform } from "./lib/platform";
 import { loadAll } from "./lib/store";
+import "@fontsource-variable/archivo/standard.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import "./styles.css";
 
 const root = createRoot(document.getElementById("root")!);

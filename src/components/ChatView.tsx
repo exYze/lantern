@@ -1,4 +1,4 @@
-import { ChevronLeft, MessageSquarePlus, PanelRightOpen, ShieldCheck } from "lucide-react";
+import { ArrowRight, ChevronLeft, MessageSquarePlus, PanelRightOpen, ShieldCheck } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { sendUserMessage, stopRun } from "../lib/agent";
 import { capabilities } from "../lib/platform";
@@ -53,8 +53,8 @@ export function ChatView() {
   if (!bot) {
     return (
       <div className="main-pane">
-        <Empty title="No bot selected" icon={<Avatar spec={{ shape: "circle", color: "#7C5CFF", eyes: "happy", mouth: "smile" }} size={64} />}>
-          <p>Create a bot from a template to get started.</p>
+        <Empty title="No bot selected">
+          <p>Pick a template and you'll have a bot to talk to.</p>
           <Button variant="primary" onClick={() => setView({ kind: "templates" })}>
             Browse templates
           </Button>
@@ -148,13 +148,19 @@ export function ChatView() {
         <div className="messages-inner">
           {visible.length === 0 ? (
             <div className="chat-intro">
-              <Avatar spec={bot.avatar} size={72} />
-              <h1>{bot.name}</h1>
-              {bot.tagline && <p className="muted">{bot.tagline}</p>}
+              <div className="chat-intro-head">
+                <Avatar spec={bot.avatar} size={56} />
+                <div>
+                  <h1>{bot.name}</h1>
+                  {bot.tagline && <p className="muted">{bot.tagline}</p>}
+                </div>
+              </div>
               <div className="starters">
+                <span className="stamp muted">Try asking</span>
                 {startersFor(bot).map((s) => (
                   <button key={s} className="starter" onClick={() => setSeed({ text: s, n: Date.now() })}>
-                    {s}
+                    <span>{s}</span>
+                    <ArrowRight size={15} />
                   </button>
                 ))}
               </div>

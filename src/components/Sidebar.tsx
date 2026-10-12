@@ -1,4 +1,4 @@
-import { BookOpen, Clock, LayoutGrid, MessageSquare, Pin, Plug, Plus, Settings, Trash2 } from "lucide-react";
+import { BookOpen, Clock, Flame, LayoutGrid, MessageSquare, Pin, Plug, Plus, Settings, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { createBlankBot } from "../lib/bots";
 import { deleteConversation, openConversation, selectBot, setView, useApp, type View } from "../lib/store";
@@ -70,7 +70,7 @@ export function Sidebar() {
                 <button className="chat-item-main" onClick={() => openConversation(c.id)}>
                   {c.routineId ? <Clock size={14} /> : <MessageSquare size={14} />}
                   <span className="chat-item-title">{c.title}</span>
-                  {running[c.id] ? <span className="live-dot" /> : <span className="chat-item-time">{timeAgo(c.updatedAt)}</span>}
+                  {running[c.id] ? <Flame size={13} className="live-flame" aria-label="Working" /> : <span className="chat-item-time">{timeAgo(c.updatedAt)}</span>}
                 </button>
                 <IconButton
                   label="Delete chat"

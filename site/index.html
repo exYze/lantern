@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lantern: bots that do real work on your own machines</title>
+<meta name="description" content="Lantern is a free, open-source app for AI bots that run on models you host. They read and write files, run commands and search the web, and they ask before they change anything.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="Lantern">
+<meta property="og:description" content="Bots that do real work on your own machines, with models you run.">
+<meta property="og:image" content="img/chat-light.png">
+<link rel="icon" type="image/svg+xml" href="img/lantern.svg">
+<link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="./"><img src="img/lantern.svg" alt="" width="28" height="28">Lantern</a>
+  <nav>
+    <a href="#download">Download</a>
+    <a href="#hub">Hub</a>
+    <a href="https://github.com/exYze/lantern">Source</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <div class="hero-text">
+    <h1>Bots that do real work on your own machines.</h1>
+    <div class="hero-copy">
+    <p class="lede">Lantern is an app for AI bots that run on models you host. Point it at Ollama, vLLM, llama.cpp or LM Studio and give a bot a job. It can read and write files, run commands and search the web.</p>
+    <p class="lede">Before it changes anything, it asks you.</p>
+    <div class="actions">
+      <a class="btn" id="hero-download" href="https://github.com/exYze/lantern/releases/latest">Download Lantern</a>
+      <a class="quiet" href="#download">Windows, macOS, Linux and Android</a>
+    </div>
+    </div>
+  </div>
+  <figure class="hero-shot">
+    <picture>
+      <source srcset="img/chat-dark.png" media="(prefers-color-scheme: dark)">
+      <img src="img/chat-light.png" width="1416" height="808" alt="Lantern on a desktop. Code Pilot has written two files and asks to run a Python command, with buttons to allow it once, always allow it, or deny it.">
+    </picture>
+  </figure>
+</section>
+
+<section class="asks" id="asks">
+  <div class="asks-copy">
+    <h2>It asks first.</h2>
+    <p>A bot that can run commands on your computer should check with you. In Lantern every command and every file change waits on a tag like this one. Allow it once, allow that kind of command from now on, or say no.</p>
+    <p>If that gets tedious, turn on Auto-review: a model you pick looks at each action, waves through the routine work and stops to ask about anything risky. Your deny rules always win.</p>
+  </div>
+  <div class="asks-demo" aria-label="An example approval">
+    <span class="nail" aria-hidden="true"></span>
+    <div class="demo-tag" id="demo-tag">
+      <p class="demo-who"><strong>Code Pilot</strong> asks to run this command.</p>
+      <code class="demo-cmd">git push origin main</code>
+      <div class="demo-actions">
+        <button type="button" class="tag-btn primary" data-answer="Allowed once">Allow once</button>
+        <button type="button" class="tag-btn" data-answer="Always allowed: git push">Always allow “git push”</button>
+        <button type="button" class="tag-btn plain" data-answer="Denied">Deny</button>
+      </div>
+      <p class="demo-stamp" id="demo-stamp" hidden></p>
+    </div>
+  </div>
+</section>
+
+<section class="models">
+  <h2>Your models, wherever they run.</h2>
+  <p class="section-lede">Lantern talks to anything that speaks the OpenAI API. Add your server, press Connect, pick a model.</p>
+  <table class="ledger">
+    <thead><tr><th>Server</th><th>Where it runs</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Ollama</td><td>Your computer</td><td>The easy start: <code>ollama pull qwen3</code></td></tr>
+      <tr><td>vLLM, SGLang</td><td>Your GPU box</td><td>Turn on tool calling for bots that use tools</td></tr>
+      <tr><td>llama.cpp, LM Studio, Jan, KoboldCpp, LocalAI</td><td>Your computer</td><td>Any model they can load</td></tr>
+      <tr><td>OpenRouter, Together, Groq, Hugging Face</td><td>Hosted</td><td>Open models when you don't have the hardware</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="hub" id="hub">
+  <div class="hub-copy">
+    <h2>One setup, every device.</h2>
+    <p>Run a Lantern Hub on a small Linux server or a VM at home, and every device you connect shares the same bots, chats, memories, skills and secrets. A file a bot writes from your laptop is there when you ask from your phone. Phones get a terminal too, because commands run on the hub.</p>
+    <p>Over <a href="https://tailscale.com">Tailscale</a>, your own devices connect with one tap and nothing is exposed to the internet. The hub also serves the installers, and the desktop apps update themselves from it. Updates are signed, so the apps only install releases signed with the project's key.</p>
+    <p><a href="https://github.com/exYze/lantern/blob/main/docs/HUB.md">Set up a hub</a></p>
+  </div>
+  <figure class="hub-shot">
+    <picture>
+      <source srcset="img/phone-dark.png" media="(prefers-color-scheme: dark)">
+      <img src="img/phone-light.png" width="780" height="1688" alt="Lantern on a phone. Lumi asks to run df -h on the hub.">
+    </picture>
+  </figure>
+</section>
+
+<section class="jobs">
+  <h2>Hand off the side jobs.</h2>
+  <div class="jobs-cols">
+    <p><b>Subagents.</b> A bot can pass a self-contained task to a helper that works on its own and reports back. Ask for three things at once and three helpers work in parallel. You see each helper's steps in the chat, and you still approve what it does.</p>
+    <p><b>Sandboxes.</b> On a hub, a bot can live in a sandbox: its own folder, a read-only system, your other files out of sight, and the internet only if you allow it. Bots that handle untrusted code or downloads can do it in there.</p>
+  </div>
+  <figure class="jobs-shot">
+    <img src="img/templates-light.png" width="1416" height="808" alt="The template catalogue: Lumi, Research Scout, Code Pilot, Morning Brief, Quill and more, each with a short description.">
+    <figcaption>Start from a template, or write your own instructions. Bots can keep memories, learn skills and run on a schedule.</figcaption>
+  </figure>
+</section>
+
+<section class="download" id="download">
+  <h2>Download</h2>
+  <p class="section-lede" id="release-line">The latest release from GitHub.</p>
+  <div class="rows">
+    <div class="row" data-os="windows"><h3>Windows</h3><div class="files"><a class="file" data-match="_x64-setup.exe" href="https://github.com/exYze/lantern/releases/latest">Installer (.exe)</a><a class="file alt" data-match="_x64_en-US.msi" href="https://github.com/exYze/lantern/releases/latest">MSI package</a></div><p>SmartScreen may warn because the app isn't code-signed. Choose More info, then Run anyway.</p></div>
+    <div class="row" data-os="macos"><h3>macOS</h3><div class="files"><a class="file" data-match="_universal.dmg" href="https://github.com/exYze/lantern/releases/latest">Disk image (.dmg)</a></div><p>Apple silicon and Intel. The app isn't notarized yet, so the first time, right-click it and choose Open.</p></div>
+    <div class="row" data-os="linux"><h3>Linux</h3><div class="files"><a class="file" data-match="_amd64.AppImage" href="https://github.com/exYze/lantern/releases/latest">AppImage</a><a class="file alt" data-match="_amd64.deb" href="https://github.com/exYze/lantern/releases/latest">Debian, Ubuntu (.deb)</a><a class="file alt" data-match=".x86_64.rpm" href="https://github.com/exYze/lantern/releases/latest">Fedora (.rpm)</a></div><p>x86_64. For the AppImage, <code>chmod +x</code> it and run it.</p></div>
+    <div class="row" data-os="android"><h3>Android</h3><div class="files"><a class="file" data-match="_android-universal.apk" href="https://github.com/exYze/lantern/releases/latest">APK</a></div><p>Android 8 or newer. Your browser will ask before it installs an app from outside the Play Store.</p></div>
+    <div class="row" data-os="hub"><h3>Hub</h3><div class="files"><a class="file" data-match="_linux-x86_64.tar.gz" href="https://github.com/exYze/lantern/releases/latest">Linux x86_64</a><a class="file alt" data-match="_linux-aarch64.tar.gz" href="https://github.com/exYze/lantern/releases/latest">Linux ARM64</a></div><p>Unpack it and run <code>sudo bash install.sh ./lantern-hub</code>. The <a href="https://github.com/exYze/lantern/blob/main/docs/HUB.md">hub guide</a> covers the rest.</p></div>
+  </div>
+  <p class="aside">iPhone builds need an Apple developer account, so there isn't one to download yet. You can <a href="https://github.com/exYze/lantern#building">build Lantern yourself</a> for any platform.</p>
+</section>
+
+<footer class="foot">
+  <p>Lantern is free software under the MIT license. It isn't affiliated with any AI company, and it doesn't phone home.</p>
+  <p><a href="https://github.com/exYze/lantern">Source</a> · <a href="https://github.com/exYze/lantern/releases">Releases</a> · <a href="https://github.com/exYze/lantern/blob/main/docs/HUB.md">Hub guide</a></p>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

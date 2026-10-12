@@ -1,4 +1,4 @@
-import { ArrowRight, Link2 } from "lucide-react";
+import { ArrowRight, ChevronRight, Link2 } from "lucide-react";
 import { useState } from "react";
 import { Avatar } from "../components/Avatar";
 import { HubConnectForm } from "../components/HubConnect";
@@ -22,20 +22,26 @@ export function Onboarding() {
 
   return (
     <div className="onboarding">
-      <div className="onboarding-card">
+      <aside className="onboarding-side">
+        <div className="onboarding-brand">
+          <img src={logo} alt="" width={30} height={30} />
+          <span>Lantern</span>
+        </div>
+        <p className="onboarding-statement">Bots that do real work on your own machines, with models you run.</p>
+        <p className="onboarding-foot">Free and open source. No account, and nothing is sent to us.</p>
+      </aside>
+      <main className="onboarding-main">
         {step === "welcome" && (
-          <div className="onboarding-step center">
-            <img src={logo} alt="" width={88} height={88} />
-            <h1>Welcome to Lantern</h1>
-            <p className="lead">Create AI bots with their own instructions, memories, skills, tools and routines, running on open-source models you choose.</p>
-            <ul className="welcome-points">
-              <li>Works with Ollama, llama.cpp, vLLM, LM Studio and any OpenAI-compatible server</li>
-              <li>Your data stays on your device. No account, no telemetry</li>
-              <li>Bots ask before they change things or run commands</li>
-            </ul>
-            <div className="row wrap center">
+          <div className="onboarding-step">
+            <h1>Welcome.</h1>
+            <p className="lead">
+              Lantern talks to the model server you already have: Ollama, llama.cpp, vLLM, LM Studio or anything that speaks the OpenAI API. Your bots can read and write files, run
+              commands and search the web.
+            </p>
+            <p className="lead">They ask you first before they change anything or run a command.</p>
+            <div className="row wrap">
               <Button variant={DEFAULT_HUB_URL ? "secondary" : "primary"} onClick={() => setStep(hasProvider ? "bot" : "server")}>
-                Get started <ArrowRight size={16} />
+                Set up this device <ArrowRight size={16} />
               </Button>
               <Button variant={DEFAULT_HUB_URL ? "primary" : "secondary"} onClick={() => setStep("hub")}>
                 <Link2 size={16} /> Connect to a Lantern Hub
@@ -80,21 +86,24 @@ export function Onboarding() {
         )}
         {step === "bot" && (
           <div className="onboarding-step">
-            <h2>Create your first bot</h2>
-            <p className="muted">Start from a template. You can change its name, look and instructions any time.</p>
-            <div className="card-grid compact">
+            <h2>Pick your first bot</h2>
+            <p className="muted">Each one comes with instructions for a job. You can rename it, redraw it and rewrite it later.</p>
+            <div className="catalogue">
               {featured.map((t) => (
                 <button
                   key={t.id}
-                  className="tcard"
+                  className="catalogue-row"
                   onClick={async () => {
                     await createBotFromTemplate(t);
                     await finish();
                   }}
                 >
-                  <Avatar spec={t.avatar} size={44} />
-                  <span className="tcard-name">{t.name}</span>
-                  <span className="tcard-tagline">{t.tagline}</span>
+                  <Avatar spec={t.avatar} size={36} />
+                  <span className="catalogue-text">
+                    <span className="catalogue-name">{t.name}</span>
+                    <span className="catalogue-desc">{t.tagline}</span>
+                  </span>
+                  <ChevronRight size={17} className="catalogue-go" />
                 </button>
               ))}
             </div>
@@ -111,7 +120,7 @@ export function Onboarding() {
             </div>
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }

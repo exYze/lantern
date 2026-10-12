@@ -1,18 +1,22 @@
-import { useId } from "react";
 import type { AvatarEyes, AvatarMouth, AvatarShape, AvatarSpec } from "../lib/types";
 
 export const AVATAR_SHAPES: AvatarShape[] = ["circle", "squircle", "hexagon", "flower", "diamond", "shield"];
 export const AVATAR_EYES: AvatarEyes[] = ["dots", "happy", "wink", "wide", "sleepy", "visor"];
 export const AVATAR_MOUTHS: AvatarMouth[] = ["smile", "grin", "flat", "open", "tongue", "none"];
-export const AVATAR_COLORS = ["#7C5CFF", "#0EA5E9", "#22C55E", "#F59E0B", "#EC4899", "#14B8A6", "#64748B", "#8B5CF6", "#F97316", "#06B6D4", "#10B981", "#A855F7", "#EF4444", "#84CC16"];
+/** Enamel paint colors, as on old lanterns and tool tins. */
+export const AVATAR_COLORS = ["#D9A21B", "#C8462B", "#E8630A", "#2E5C8A", "#2F6B4F", "#5E7D3A", "#4E7F8C", "#8C6A4F", "#B85C38", "#7A8B7F", "#C9CEC7", "#8E2F25"];
 
-function mix(hex: string, target: number, amount: number): string {
+const INK = "#191D1B";
+const CHALK = "#F3F1EA";
+
+/** Ink features on light paint, chalk-white on dark paint. */
+function faceFor(hex: string): string {
   const n = parseInt(hex.replace("#", ""), 16);
-  const ch = (shift: number) => Math.round(((n >> shift) & 255) * (1 - amount) + target * amount);
-  return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
+  if (Number.isNaN(n)) return INK;
+  const lin = (c: number) => ((c /= 255) <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const lum = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  return lum < 0.16 ? CHALK : INK;
 }
-
-const FACE = "#1E1838";
 
 function Shape({ shape, fill }: { shape: AvatarShape; fill: string }) {
   switch (shape) {
@@ -39,12 +43,12 @@ function Shape({ shape, fill }: { shape: AvatarShape; fill: string }) {
   }
 }
 
-function Eyes({ eyes }: { eyes: AvatarEyes }) {
-  const s = { stroke: FACE, strokeWidth: 5, strokeLinecap: "round" as const, fill: "none" };
+function Eyes({ eyes, face }: { eyes: AvatarEyes; face: string }) {
+  const s = { stroke: face, strokeWidth: 5, strokeLinecap: "round" as const, fill: "none" };
   switch (eyes) {
     case "dots":
       return (
-        <g fill={FACE}>
+        <g fill={face}>
           <circle cx="37" cy="46" r="6" />
           <circle cx="63" cy="46" r="6" />
         </g>
@@ -59,7 +63,7 @@ function Eyes({ eyes }: { eyes: AvatarEyes }) {
     case "wink":
       return (
         <g>
-          <circle cx="37" cy="46" r="6" fill={FACE} />
+          <circle cx="37" cy="46" r="6" fill={face} />
           <path d="M56 47 H70" {...s} />
         </g>
       );
@@ -68,8 +72,8 @@ function Eyes({ eyes }: { eyes: AvatarEyes }) {
         <g>
           <circle cx="37" cy="45" r="10" fill="#fff" />
           <circle cx="63" cy="45" r="10" fill="#fff" />
-          <circle cx="39" cy="46" r="5" fill={FACE} />
-          <circle cx="65" cy="46" r="5" fill={FACE} />
+          <circle cx="39" cy="46" r="5" fill={INK} />
+          <circle cx="65" cy="46" r="5" fill={INK} />
         </g>
       );
     case "sleepy":
@@ -82,30 +86,30 @@ function Eyes({ eyes }: { eyes: AvatarEyes }) {
     case "visor":
       return (
         <g>
-          <rect x="24" y="37" width="52" height="18" rx="9" fill={FACE} />
-          <circle cx="38" cy="46" r="4" fill="#9EF0FF" />
-          <circle cx="62" cy="46" r="4" fill="#9EF0FF" />
+          <rect x="24" y="37" width="52" height="18" rx="9" fill={INK} />
+          <circle cx="38" cy="46" r="4" fill="#F4DDAA" />
+          <circle cx="62" cy="46" r="4" fill="#F4DDAA" />
         </g>
       );
   }
 }
 
-function Mouth({ mouth }: { mouth: AvatarMouth }) {
-  const s = { stroke: FACE, strokeWidth: 5, strokeLinecap: "round" as const, fill: "none" };
+function Mouth({ mouth, face }: { mouth: AvatarMouth; face: string }) {
+  const s = { stroke: face, strokeWidth: 5, strokeLinecap: "round" as const, fill: "none" };
   switch (mouth) {
     case "smile":
       return <path d="M39 63 Q50 73 61 63" {...s} />;
     case "grin":
-      return <path d="M37 61 Q50 79 63 61 Z" fill={FACE} stroke={FACE} strokeWidth="3" strokeLinejoin="round" />;
+      return <path d="M37 61 Q50 79 63 61 Z" fill={face} stroke={face} strokeWidth="3" strokeLinejoin="round" />;
     case "flat":
       return <path d="M41 66 H59" {...s} />;
     case "open":
-      return <ellipse cx="50" cy="67" rx="7" ry="6" fill={FACE} />;
+      return <ellipse cx="50" cy="67" rx="7" ry="6" fill={face} />;
     case "tongue":
       return (
         <g>
-          <path d="M37 61 Q50 79 63 61 Z" fill={FACE} stroke={FACE} strokeWidth="3" strokeLinejoin="round" />
-          <ellipse cx="50" cy="70" rx="6" ry="4" fill="#FF7A9C" />
+          <path d="M37 61 Q50 79 63 61 Z" fill={face} stroke={face} strokeWidth="3" strokeLinejoin="round" />
+          <ellipse cx="50" cy="70" rx="6" ry="4" fill="#D9705A" />
         </g>
       );
     case "none":
@@ -114,27 +118,12 @@ function Mouth({ mouth }: { mouth: AvatarMouth }) {
 }
 
 export function Avatar({ spec, size = 36, busy, className = "" }: { spec: AvatarSpec; size?: number; busy?: boolean; className?: string }) {
-  // Unique per instance: a shared id would resolve to a gradient inside a hidden (display:none) copy.
-  const id = `av${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   return (
     <span className={`avatar${busy ? " avatar-busy" : ""} ${className}`} style={{ width: size, height: size }}>
       <svg viewBox="0 0 100 100" width={size} height={size} aria-hidden="true">
-        <defs>
-          <linearGradient id={id} x1="0" y1="0" x2="0.4" y2="1">
-            <stop offset="0" stopColor={mix(spec.color, 255, 0.28)} />
-            <stop offset="1" stopColor={spec.color} />
-          </linearGradient>
-        </defs>
-        <Shape shape={spec.shape} fill={`url(#${id})`} />
-        <ellipse cx="36" cy="24" rx="16" ry="8" fill="#fff" opacity="0.22" />
-        <Eyes eyes={spec.eyes} />
-        <Mouth mouth={spec.mouth} />
-        {spec.mouth !== "none" && spec.eyes !== "visor" && (
-          <g fill="#FF8FB1" opacity="0.45">
-            <circle cx="27" cy="60" r="5" />
-            <circle cx="73" cy="60" r="5" />
-          </g>
-        )}
+        <Shape shape={spec.shape} fill={spec.color} />
+        <Eyes eyes={spec.eyes} face={faceFor(spec.color)} />
+        <Mouth mouth={spec.mouth} face={faceFor(spec.color)} />
         {spec.badge && (
           <g>
             <circle cx="80" cy="20" r="17" fill="var(--bg-elevated, #fff)" />

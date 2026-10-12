@@ -1,4 +1,4 @@
-import { Download, ExternalLink, FolderOpen, KeyRound, Pencil, Plus, RefreshCw, Smartphone, Trash2, Unplug, Upload } from "lucide-react";
+import { Check, CircleAlert, CloudOff, Download, ExternalLink, FolderOpen, KeyRound, Pencil, Plus, RefreshCw, Smartphone, Trash2, Unplug, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APPROVAL_MODES } from "../components/ChatView";
 import { HubConnectForm } from "../components/HubConnect";
@@ -213,8 +213,8 @@ function HubConnected({ sync }: { sync: SyncState }) {
         <div className="list-main">
           <strong>{hub.name}</strong>
           <span className="muted small mono">{hub.url}</span>
-          <span className="hub-status small">
-            <span className={`sync-dot ${sync.status}`} />
+          <span className={`hub-status small ${sync.status}`}>
+            {sync.status === "online" ? <Check size={14} /> : sync.status === "connecting" ? <RefreshCw size={14} /> : sync.status === "error" ? <CircleAlert size={14} /> : <CloudOff size={14} />}
             {syncLabel(sync)}
           </span>
           {sync.status === "offline" && sync.error && <span className="muted small">{sync.error}</span>}
@@ -358,7 +358,7 @@ function ApprovalsSection() {
           ))}
         </ul>
       ) : (
-        <p className="muted small">No rules yet. Choosing “Always allow” on an approval card adds one.</p>
+        <p className="muted small">No rules yet. Choosing “Always allow” when a bot asks adds one.</p>
       )}
       <div className="row wrap">
         <select className="select" value={decision} onChange={(e) => setDecision(e.target.value as "allow" | "deny")}>

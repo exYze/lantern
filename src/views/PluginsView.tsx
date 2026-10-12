@@ -165,7 +165,7 @@ function ServerEditor({ server, onClose }: { server?: McpServer; onClose: () => 
         <Field label="Type">
           <select className="select" value={draft.transport} onChange={(e) => setDraft({ ...draft, transport: e.target.value as McpServer["transport"] })}>
             <option value="stdio" disabled={!capabilities.mcpStdio}>
-              Local command (stdio){capabilities.mcpStdio ? "" : " — desktop only"}
+              Local command (stdio){capabilities.mcpStdio ? "" : ", desktop only"}
             </option>
             <option value="http">Remote URL (Streamable HTTP)</option>
           </select>
@@ -197,7 +197,7 @@ function ServerEditor({ server, onClose }: { server?: McpServer; onClose: () => 
               </>
             ) : (
               <>
-                <CircleCheck size={15} /> Connected — {testing.tools.length} tools: {testing.tools.map((t) => t.name).join(", ") || "none"}
+                <CircleCheck size={15} /> Connected. {testing.tools.length} tools: {testing.tools.map((t) => t.name).join(", ") || "none"}
               </>
             )}
           </div>
@@ -224,7 +224,7 @@ export function PluginsView() {
       />
       <div className="page-body">
         {!servers.length ? (
-          <Empty icon={<Plug size={36} />} title="No plugins yet">
+          <Empty title="No plugins yet">
             Add an MCP server, then switch it on for a bot in the bot's Plugins tab.
           </Empty>
         ) : (

@@ -1,0 +1,652 @@
+/* Lantern's site uses the app's look: a hurricane lantern and the catalogue that sells it.
+   Enamel green, ink on paper, stamped labels, and flame orange only where you act. */
+@font-face {
+  font-family: "Archivo";
+  src: url(fonts/archivo.woff2) format("woff2-variations");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url(fonts/plex-mono.woff2) format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  --paper: #f6f6f3;
+  --ink: #191d1b;
+  --muted: #5b625e;
+  --line: #dcded8;
+  --green: #1f3b2f;
+  --green-text: #eef2ec;
+  --green-muted: #b4c6ba;
+  --flame: #bf4512;
+  --flame-hover: #a33a0f;
+  --on-flame: #ffffff;
+  --tag: #f6e2cf;
+  --tag-ring: #d49a6c;
+  --code: #ecece7;
+  --wide: 1180px;
+  --pad: clamp(16px, 4vw, 40px);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #121614;
+    --ink: #e6ebe7;
+    --muted: #9ba59f;
+    --line: #2a322e;
+    --green: #16291f;
+    --green-text: #e6ece7;
+    --green-muted: #9bb2a3;
+    --flame: #f08a3c;
+    --flame-hover: #f59e57;
+    --on-flame: #1a1006;
+    --tag: #3a2618;
+    --tag-ring: #8a5a36;
+    --code: #1a1f1c;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 17px/1.6 "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  overflow-x: clip;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 750;
+  font-stretch: 87.5%;
+  line-height: 1.04;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: clamp(34px, 5vw, 56px);
+}
+
+p {
+  margin: 0 0 14px;
+}
+
+a {
+  color: inherit;
+  text-underline-offset: 3px;
+}
+
+code {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: var(--code);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--flame);
+  outline-offset: 2px;
+}
+
+.stamp {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  font-stretch: 87.5%;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-radius: 6px;
+  background: var(--flame);
+  color: var(--on-flame);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.btn:hover {
+  background: var(--flame-hover);
+}
+
+section {
+  padding: 0 var(--pad);
+}
+
+.section-lede {
+  max-width: 58ch;
+  color: var(--muted);
+  font-size: 19px;
+  margin-top: 14px;
+}
+
+/* ------------------------------------------------------------ top bar */
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px var(--pad);
+  background: var(--green);
+  color: var(--green-text);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 750;
+  font-stretch: 87.5%;
+  font-size: 20px;
+  text-decoration: none;
+}
+
+.top nav {
+  display: flex;
+  gap: clamp(14px, 3vw, 30px);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.top nav a {
+  text-decoration: none;
+  color: var(--green-muted);
+}
+
+.top nav a:hover {
+  color: var(--green-text);
+}
+
+/* ------------------------------------------------------------ hero: headline and copy share a row; the screenshot
+   below is set in from the left, runs off the right edge and hangs into the paper */
+.hero {
+  padding: clamp(48px, 8vw, 100px) 0 0 max(var(--pad), calc((100vw - var(--wide)) / 2));
+  background: var(--green);
+  color: var(--green-text);
+  overflow-x: clip;
+}
+
+.hero-text {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: clamp(24px, 5vw, 72px);
+  align-items: end;
+  max-width: var(--wide);
+  padding-right: var(--pad);
+}
+
+.hero h1 {
+  font-size: clamp(46px, 7vw, 96px);
+  line-height: 0.96;
+}
+
+.lede {
+  font-size: 18px;
+  color: var(--green-muted);
+  max-width: 44ch;
+}
+
+.lede + .lede {
+  color: var(--green-text);
+  font-weight: 650;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 22px;
+  margin-top: 24px;
+}
+
+.quiet {
+  color: var(--green-muted);
+  font-size: 15px;
+}
+
+.hero-shot {
+  margin: clamp(40px, 6vw, 72px) 0 -200px clamp(0px, 9vw, 150px);
+  position: relative;
+}
+
+.hero-shot img {
+  display: block;
+  width: calc(100% + 140px);
+  max-width: 1416px;
+  height: auto;
+  border-radius: 8px 0 0 8px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+}
+
+/* ------------------------------------------------------------ "It asks first": the signature, a tag hung on a nail */
+.asks {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  gap: clamp(28px, 6vw, 90px);
+  max-width: var(--wide);
+  margin: calc(200px + clamp(60px, 9vw, 120px)) auto 0;
+  padding: 0 var(--pad);
+  align-items: center;
+}
+
+.asks-copy p {
+  max-width: 46ch;
+  color: var(--muted);
+}
+
+.asks-copy h2 {
+  margin-bottom: 22px;
+}
+
+.asks-demo {
+  position: relative;
+  padding: 70px 12px 0;
+  display: flex;
+  justify-content: center;
+}
+
+.nail {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: inset -2px -2px 0 rgba(0, 0, 0, 0.25);
+}
+
+/* The string from the nail to the hole. */
+.nail::after {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 6px;
+  width: 2px;
+  height: 78px;
+  background: var(--flame);
+  transform-origin: top;
+  transform: rotate(14deg);
+}
+
+.demo-tag {
+  position: relative;
+  width: min(460px, 100%);
+  padding: 50px 26px 26px;
+  background: var(--tag);
+  clip-path: polygon(22px 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 0 100%, 0 22px);
+  transform: rotate(-4deg);
+  transform-origin: 50% 0;
+}
+
+.demo-tag::before {
+  content: "";
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 0 0 4px var(--tag-ring);
+}
+
+.demo-who {
+  font-size: 18px;
+}
+
+.demo-cmd {
+  display: block;
+  margin: 4px 0 18px;
+  padding: 10px 12px;
+  font-size: 15px;
+  background: var(--paper);
+}
+
+.demo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-btn {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 650;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1.5px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.tag-btn.primary {
+  background: var(--flame);
+  border-color: var(--flame);
+  color: var(--on-flame);
+}
+
+.tag-btn.plain {
+  border-color: transparent;
+}
+
+.demo-tag.answered .demo-actions,
+.demo-tag.answered .demo-who {
+  opacity: 0.35;
+}
+
+.demo-tag.answered .demo-actions {
+  pointer-events: none;
+}
+
+/* The answer gets stamped across the tag. */
+.demo-stamp {
+  position: absolute;
+  right: 22px;
+  bottom: 30px;
+  margin: 0;
+  padding: 4px 10px;
+  border: 3px solid var(--green);
+  color: var(--green);
+  font-weight: 800;
+  font-stretch: 75%;
+  font-size: 22px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transform: rotate(-8deg);
+}
+
+@media (prefers-color-scheme: dark) {
+  .demo-stamp {
+    border-color: #8fc4a6;
+    color: #8fc4a6;
+  }
+}
+
+.demo-tag.denied .demo-stamp {
+  border-color: var(--flame);
+  color: var(--flame);
+}
+
+/* ------------------------------------------------------------ models: a ledger */
+.models {
+  max-width: var(--wide);
+  margin: clamp(80px, 11vw, 140px) auto 0;
+}
+
+.ledger {
+  width: 100%;
+  margin-top: 34px;
+  border-collapse: collapse;
+  border-top: 3px solid var(--ink);
+  font-size: 16px;
+}
+
+.ledger th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  font-stretch: 87.5%;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+  padding: 12px 16px 10px 0;
+  border-bottom: 1px solid var(--ink);
+}
+
+.ledger td {
+  padding: 14px 16px 14px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.ledger td:first-child {
+  font-weight: 700;
+  font-stretch: 87.5%;
+  font-size: 19px;
+  width: 38%;
+}
+
+.ledger td:nth-child(2) {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ hub: text with a phone beside it */
+.hub {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 330px);
+  gap: clamp(28px, 6vw, 96px);
+  max-width: var(--wide);
+  margin: clamp(80px, 11vw, 140px) auto 0;
+  align-items: center;
+}
+
+.hub-copy h2 {
+  margin-bottom: 24px;
+  max-width: 12ch;
+}
+
+.hub-copy p {
+  max-width: 54ch;
+}
+
+.hub-copy p:last-child a {
+  font-weight: 700;
+}
+
+.hub-shot {
+  margin: 0;
+}
+
+.hub-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 10px solid var(--ink);
+  border-radius: 34px;
+}
+
+/* ------------------------------------------------------------ side jobs: two columns, then a screenshot set off to the right */
+.jobs {
+  max-width: var(--wide);
+  margin: clamp(80px, 11vw, 140px) auto 0;
+}
+
+.jobs-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(24px, 5vw, 64px);
+  margin-top: 30px;
+  max-width: 980px;
+}
+
+.jobs-cols b {
+  font-stretch: 87.5%;
+}
+
+.jobs-shot {
+  margin: 40px 0 0 clamp(0px, 12vw, 160px);
+}
+
+.jobs-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.jobs-shot figcaption {
+  margin-top: 12px;
+  font-size: 15px;
+  color: var(--muted);
+  max-width: 60ch;
+}
+
+/* ------------------------------------------------------------ download: catalogue rows */
+.download {
+  max-width: var(--wide);
+  margin: clamp(80px, 11vw, 140px) auto 0;
+}
+
+.rows {
+  margin-top: 30px;
+  border-top: 3px solid var(--ink);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 160px minmax(230px, 300px) 1fr;
+  gap: 12px 32px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row h3 {
+  font-size: 24px;
+}
+
+.row p {
+  margin: 0;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.file span {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.file:hover {
+  background: var(--code);
+}
+
+.file.alt {
+  border: none;
+  padding: 0 2px;
+  text-decoration: underline;
+}
+
+.mine .file:not(.alt) {
+  background: var(--flame);
+  border-color: var(--flame);
+  color: var(--on-flame);
+}
+
+.mine .file:not(.alt) span {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.aside {
+  margin-top: 22px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+/* ------------------------------------------------------------ footer */
+.foot {
+  margin-top: clamp(80px, 11vw, 140px);
+  padding: 36px var(--pad) 48px;
+  background: var(--green);
+  color: var(--green-muted);
+  font-size: 15px;
+}
+
+.foot p {
+  max-width: var(--wide);
+  margin: 0 auto 8px;
+}
+
+.foot a {
+  color: var(--green-text);
+}
+
+/* ------------------------------------------------------------ narrow screens */
+@media (max-width: 860px) {
+  .hero-text {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hero-shot {
+    margin: 36px 0 -80px 0;
+  }
+
+  .asks {
+    margin-top: 130px;
+  }
+
+  .asks,
+  .hub {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hub-shot {
+    max-width: 300px;
+  }
+
+  .jobs-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .jobs-shot {
+    margin-left: 0;
+  }
+
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ledger td:first-child {
+    width: auto;
+  }
+
+  .ledger td:nth-child(2) {
+    white-space: normal;
+  }
+}

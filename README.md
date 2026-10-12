@@ -2,7 +2,9 @@
 
 # Lantern
 
-**Open-source AI bots for open-source LLMs** — on Windows, macOS, Linux, Android and iOS.
+**Open-source AI bots for open-source LLMs**, on Windows, macOS, Linux, Android and iOS.
+
+**Website:** [exyze.github.io/lantern](https://exyze.github.io/lantern/) · [Download](https://github.com/exYze/lantern/releases/latest)
 
 Lantern lets you create bots with their own personality, instructions, memories, skills, tools and
 scheduled routines, and run them on models **you** choose: Ollama, llama.cpp, vLLM, LM Studio,
@@ -28,7 +30,7 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | 🛡️ **Approvals** | *Ask first*, *Auto-review* (an LLM judges each action) or *Auto-approve*, plus allow/deny rules ("Always allow `git status`") |
 | 🧠 **Memories** | Bots remember facts you tell them; view and delete them any time |
 | 📚 **Skills** | Reusable instruction packs; private per bot or shared; import `SKILL.md` files |
-| ⏰ **Routines** | "Every weekday at 8:00, brief me on…" — daily, weekdays, weekly, interval or one-off |
+| ⏰ **Routines** | "Every weekday at 8:00, brief me on…": daily, weekdays, weekly, interval or one-off |
 | 🔑 **Secrets** | Write-only credentials exposed to terminal commands as env vars, redacted from tool output |
 | 🎙️ **Voice memos** | Transcribed by any OpenAI-compatible speech-to-text server (Speaches/faster-whisper, LocalAI…) |
 | 🔒 **Private** | Local SQLite database; secrets in the OS keychain on Windows, macOS and iOS |
@@ -43,9 +45,9 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | Chat, memories, skills, routines, web | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | File tools | ✅ | ✅ | ✅ | ✅ (app folder or hub) | ✅ (app folder or hub) | via hub |
 | Terminal | ✅ | ✅ | ✅ | via hub | via hub | via hub |
-| Local (stdio) MCP | ✅ | ✅ | ✅ | — | — | — |
+| Local (stdio) MCP | ✅ | ✅ | ✅ | no | no | no |
 | Sync through a Lantern Hub | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Auto-updates from the hub | ✅ | ✅ | ✅ | download prompt | — | — |
+| Auto-updates from the hub | ✅ | ✅ | ✅ | download prompt | no | no |
 | HTTP MCP servers | ✅ | ✅ | ✅ | ✅ | ✅ | CORS-limited |
 | Secrets storage | Credential Manager | Keychain | app DB | app DB | Keychain | localStorage |
 
@@ -170,6 +172,10 @@ src/lib/sync.ts          local-first sync with the hub (outbox, live events, mer
 src/lib/hub.ts           hub pairing, API and remote tools
 src/lib/subagents.ts     subagents (delegate_task): parallel helpers, isolated folders and sandboxes
 ```
+
+## Design
+
+The look and the rules behind it are in [docs/DESIGN.md](docs/DESIGN.md). The website lives in `site/` and deploys to GitHub Pages from `main`.
 
 ## License
 

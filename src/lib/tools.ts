@@ -89,7 +89,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
             .map((l, i) => `${String(r.startLine + i).padStart(width)}\t${l}`)
             .join("\n")
         : "(empty file)";
-      return `${r.path} (${r.totalLines} lines)\n${body}${r.truncated ? `\n[more lines available — continue with offset=${r.startLine + r.content.split("\n").length}]` : ""}`;
+      return `${r.path} (${r.totalLines} lines)\n${body}${r.truncated ? `\n[more lines available; continue with offset=${r.startLine + r.content.split("\n").length}]` : ""}`;
     },
   },
   {
@@ -145,7 +145,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     available: canUseFiles,
     description: "List the entries of a folder (defaults to the workspace).",
     parameters: obj({ path: { type: "string" } }),
-    summarize: (a) => `List ${a.path || "workspace"}`,
+    summarize: (a) => `List ${a.path && a.path !== "." ? a.path : "workspace"}`,
     async run(a, ctx) {
       const entries = await files(ctx).list(ctx.workspace, opt(a.path), ctx.confine);
       if (!entries.length) return "(empty folder)";
@@ -375,7 +375,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
       const rs = useApp.getState().routines.filter((r) => r.botId === ctx.bot.id);
       if (!rs.length) return "No routines.";
       return rs
-        .map((r) => `[${r.id}] ${r.name} — ${describeSchedule(r.schedule)}${r.enabled ? "" : " (paused)"}; next: ${r.nextRunAt ? new Date(r.nextRunAt).toLocaleString() : "—"}\n  ${r.prompt}`)
+        .map((r) => `[${r.id}] ${r.name}: ${describeSchedule(r.schedule)}${r.enabled ? "" : " (paused)"}; next: ${r.nextRunAt ? new Date(r.nextRunAt).toLocaleString() : "none"}\n  ${r.prompt}`)
         .join("\n");
     },
   },

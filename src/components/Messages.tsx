@@ -89,7 +89,7 @@ function StatusIcon({ status }: { status: ToolCall["status"] }) {
     case "awaiting-approval":
       return <ShieldAlert size={14} className="warn" />;
     case "reviewing":
-      return <ShieldCheck size={14} className="spin-soft" />;
+      return <ShieldCheck size={14} />;
     default:
       return <LoaderCircle size={14} className="spin" />;
   }
@@ -124,22 +124,25 @@ function ToolCallCard({ call, botName }: { call: ToolCall; botName: string }) {
       </button>
 
       {awaiting && (
-        <div className="approval">
-          <div className="approval-text">
-            <strong>{botName}</strong> wants to {isShell ? "run this command" : `use ${call.name.replace(/^mcp__/, "").replace(/__/g, " · ")}`}.
-            {call.review && <div className="approval-review">Auto-review: {call.review.reason}</div>}
-          </div>
-          {isShell && <pre className="approval-cmd">{String(args.command ?? "")}</pre>}
-          <div className="approval-actions">
-            <Button variant="primary" size="sm" onClick={() => answerApproval(call.id, "allow")}>
-              Allow once
-            </Button>
-            <Button size="sm" onClick={() => answerApproval(call.id, "always")}>
-              {isShell && pattern ? `Always allow “${pattern}”` : "Always allow"}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => answerApproval(call.id, "deny")}>
-              Deny
-            </Button>
+        <div className="approval-tag">
+          <span className="approval-string" aria-hidden="true" />
+          <div className="approval">
+            <div className="approval-text">
+              <strong>{botName}</strong> asks to {isShell ? "run this command" : call.name.startsWith("mcp__") ? `use ${title}` : title.charAt(0).toLowerCase() + title.slice(1)}.
+              {call.review && <div className="approval-review">Auto-review: {call.review.reason}</div>}
+            </div>
+            {isShell && <pre className="approval-cmd">{String(args.command ?? "")}</pre>}
+            <div className="approval-actions">
+              <Button variant="primary" size="sm" onClick={() => answerApproval(call.id, "allow")}>
+                Allow once
+              </Button>
+              <Button size="sm" onClick={() => answerApproval(call.id, "always")}>
+                {isShell && pattern ? `Always allow “${pattern}”` : "Always allow"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => answerApproval(call.id, "deny")}>
+                Deny
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -158,7 +161,7 @@ function ToolCallCard({ call, botName }: { call: ToolCall; botName: string }) {
               <pre className="toolcard-result">{call.result}</pre>
             </>
           )}
-          {call.review && <div className="toolcard-note">Auto-review: {call.review.verdict} — {call.review.reason}</div>}
+          {call.review && <div className="toolcard-note">Auto-review said {call.review.verdict === "allow" ? "allow" : "ask you"}: {call.review.reason}</div>}
         </div>
       )}
       {call.approval && call.status !== "awaiting-approval" && call.approval !== "read-only" && <div className="toolcard-note">{APPROVAL_NOTE[call.approval]}</div>}
@@ -281,9 +284,7 @@ function AssistantMessage({ msg, bot, isLast, continued }: { msg: ChatMessage; b
         {msg.reasoning?.trim() && <Reasoning text={msg.reasoning} streaming={streaming && !msg.content} />}
         {streaming && empty && !msg.reasoning && (
           <div className="typing">
-            <span />
-            <span />
-            <span />
+            <LoaderCircle size={14} className="spin" /> Thinking
           </div>
         )}
         {msg.content && <Markdown text={msg.content} />}

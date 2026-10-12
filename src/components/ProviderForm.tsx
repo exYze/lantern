@@ -75,7 +75,7 @@ export function ProviderForm({ provider, onSaved, onCancel, submitLabel = "Save"
       )}
       {preset && (
         <p className="muted small">
-          {preset.note}{" "}
+          {preset.note.split("`").map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}{" "}
           <button className="link" onClick={() => void openExternal(preset.docs)}>
             Docs <ExternalLink size={11} />
           </button>
@@ -95,7 +95,7 @@ export function ProviderForm({ provider, onSaved, onCancel, submitLabel = "Save"
         <input className="input mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
       </Field>
       <Field label={`API key${preset?.needsKey ? "" : " (optional)"}`} hint="Stored in secure storage. Leave empty for local servers.">
-        <input className="input" type="password" value={apiKey} placeholder={provider?.hasKey ? "(saved — type to replace)" : ""} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" />
+        <input className="input" type="password" value={apiKey} placeholder={provider?.hasKey ? "(saved, type to replace)" : ""} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" />
       </Field>
       <div className="row">
         <Button onClick={() => void connect()} disabled={!baseUrl.trim() || status === "testing"}>

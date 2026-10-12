@@ -180,7 +180,7 @@ function ModelTab({ bot }: { bot: Bot }) {
           <option value="">Use the app setting ({APPROVAL_MODES.find((m) => m.id === settings.approvalMode)?.label})</option>
           {APPROVAL_MODES.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.label} — {m.description}
+              {m.label}: {m.description}
             </option>
           ))}
         </select>
@@ -415,7 +415,7 @@ function PluginsTab({ bot }: { bot: Bot }) {
         <Toggle
           key={s.id}
           label={s.name}
-          description={`${s.transport === "stdio" ? `Local: ${s.command} ${(s.args ?? []).join(" ")}` : s.url}${s.enabled ? "" : " (disabled)"}${s.transport === "stdio" && !capabilities.mcpStdio ? " — desktop only" : ""}`}
+          description={`${s.transport === "stdio" ? `Local: ${s.command} ${(s.args ?? []).join(" ")}` : s.url}${s.enabled ? "" : " (disabled)"}${s.transport === "stdio" && !capabilities.mcpStdio ? ", desktop only" : ""}`}
           checked={bot.mcpServerIds.includes(s.id)}
           onChange={(on) => void saveBot({ ...bot, mcpServerIds: on ? [...bot.mcpServerIds, s.id] : bot.mcpServerIds.filter((x) => x !== s.id) })}
         />

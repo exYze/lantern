@@ -1,4 +1,4 @@
-import { BookOpen, FileUp, Pencil, Plus, Trash2 } from "lucide-react";
+import { FileUp, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 import { SkillEditor } from "../components/BotPanel";
 import { Button, confirmDialog, Empty, IconButton } from "../components/ui";
@@ -60,7 +60,7 @@ export function SkillsView() {
       />
       <div className="page-body">
         {!library.length ? (
-          <Empty icon={<BookOpen size={36} />} title="Your skill library is empty">
+          <Empty title="Your skill library is empty">
             Write a skill, or import a SKILL.md file. Then switch it on for a bot in its Skills tab.
           </Empty>
         ) : (

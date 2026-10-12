@@ -68,7 +68,7 @@ export async function runRoutine(routine: Routine, manual = false): Promise<void
       enabled: isOnce && !manual ? false : routine.enabled,
     };
     await saveRoutine(updated);
-    const outcome = await sendUserMessage(convId, `⏰ **Routine “${routine.name}”** — ${routine.prompt}`, [], { routineId: routine.id });
+    const outcome = await sendUserMessage(convId, `**Routine “${routine.name}”:** ${routine.prompt}`, [], { routineId: routine.id });
     const latest = useApp.getState().routines.find((r) => r.id === routine.id);
     if (latest) await saveRoutine({ ...latest, lastStatus: outcome === "error" ? "error" : "ok" });
   } catch (e) {

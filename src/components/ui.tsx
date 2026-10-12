@@ -68,10 +68,9 @@ export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: { id: 
   );
 }
 
-export function Empty({ icon, title, children }: { icon?: ReactNode; title: string; children?: ReactNode }) {
+export function Empty({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="empty">
-      {icon && <div className="empty-icon">{icon}</div>}
       <div className="empty-title">{title}</div>
       {children && <div className="empty-body">{children}</div>}
     </div>

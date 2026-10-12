@@ -1,4 +1,4 @@
-import { Clock, Monitor, Plus } from "lucide-react";
+import { ChevronRight, Clock, Monitor, Plus } from "lucide-react";
 import { useState } from "react";
 import { Avatar } from "../components/Avatar";
 import { Button, Modal } from "../components/ui";
@@ -27,34 +27,37 @@ export function TemplatesView() {
             </button>
           ))}
         </div>
-        <div className="card-grid">
-          <button className="tcard tcard-blank" onClick={() => void createBlankBot()}>
-            <span className="tcard-plus">
-              <Plus size={26} />
-            </span>
-            <span className="tcard-name">Blank bot</span>
-            <span className="tcard-tagline">Start from scratch with your own instructions.</span>
-          </button>
+        <div className="catalogue">
           {shown.map((t) => (
-            <button key={t.id} className="tcard" onClick={() => setOpen(t)}>
-              <Avatar spec={t.avatar} size={48} />
-              <span className="tcard-name">{t.name}</span>
-              <span className="tcard-tagline">{t.tagline}</span>
-              <span className="tcard-meta">
-                <span>{t.category}</span>
+            <button key={t.id} className="catalogue-row" onClick={() => setOpen(t)}>
+              <Avatar spec={t.avatar} size={40} />
+              <span className="catalogue-text">
+                <span className="catalogue-name">{t.name}</span>
+                <span className="catalogue-desc">{t.tagline}</span>
+              </span>
+              <span className="catalogue-meta">
                 {t.routine && (
-                  <span title="Includes a routine">
-                    <Clock size={12} />
+                  <span title="Comes with a routine">
+                    <Clock size={13} />
                   </span>
                 )}
                 {t.desktopOnly && (
                   <span title="Works best on desktop">
-                    <Monitor size={12} />
+                    <Monitor size={13} />
                   </span>
                 )}
+                <span className="stamp">{t.category}</span>
               </span>
+              <ChevronRight size={17} className="catalogue-go" />
             </button>
           ))}
+          <button className="catalogue-row catalogue-blank" onClick={() => void createBlankBot()}>
+            <Plus size={18} />
+            <span className="catalogue-text">
+              <span className="catalogue-name">Blank bot</span>
+              <span className="catalogue-desc">Write your own instructions from scratch.</span>
+            </span>
+          </button>
         </div>
       </div>
       {open && (
@@ -96,7 +99,7 @@ export function TemplatesView() {
             <>
               <h3>Routine</h3>
               <p className="muted">
-                “{open.routine.name}” — {describeSchedule(open.routine.schedule)}. It starts paused; turn it on after telling the bot what to cover.
+                “{open.routine.name}”, {describeSchedule(open.routine.schedule).toLowerCase()}. It starts paused. Turn it on once you've told the bot what to cover.
               </p>
             </>
           )}
