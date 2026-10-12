@@ -1,3 +1,4 @@
+mod android_update;
 mod db;
 mod fs_tools;
 mod http;
@@ -59,6 +60,8 @@ pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(android_update::init());
     builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -103,6 +106,10 @@ pub fn run() {
             mcp_stdio::mcp_kill,
             updates::update_check,
             updates::update_install,
+            android_update::apk_download,
+            android_update::apk_installer_status,
+            android_update::apk_open_install_settings,
+            android_update::apk_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lantern");

@@ -34,9 +34,12 @@ export interface Toast {
 export interface UpdateState {
   version: string;
   notes?: string;
-  /** Mobile: where to download the new build. Desktop installs in-app. */
+  /** Android: the new APK on the hub, and its checksum. Desktop installs through the updater. */
   downloadUrl?: string;
-  status: "available" | "downloading" | "installing";
+  sha256?: string;
+  /** Android: the downloaded, checked APK, ready to install. */
+  apkPath?: string;
+  status: "available" | "downloading" | "ready" | "installing";
   /** 0–1 while downloading, when the size is known. */
   progress?: number;
   dismissed?: boolean;

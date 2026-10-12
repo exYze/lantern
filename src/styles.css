@@ -2489,11 +2489,10 @@ input[type="range"] {
     padding: 8px 14px calc(30px + env(safe-area-inset-bottom));
   }
 
+  /* One scrolling column on phones (the page body itself never scrolls). */
   .onboarding {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-    height: auto;
-    min-height: 100dvh;
+    display: block;
+    overflow-y: auto;
   }
 
   .onboarding-side {

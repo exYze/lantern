@@ -12,7 +12,7 @@ use tauri::{ipc::Channel, State};
 use tokio::sync::oneshot;
 
 pub struct HttpState {
-    client: reqwest::Client,
+    pub(crate) client: reqwest::Client,
     cancels: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
 }
 

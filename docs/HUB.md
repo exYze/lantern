@@ -200,8 +200,18 @@ address check it even before they're paired). Updates are signed: the app only i
 signature matches the public key built into it (`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`),
 and whose signed version matches the manifest, so nobody can pass off an older release as a new one. By
 default they install at startup or while the app is in the background, never in the middle of a bot's work
-(**Settings → About**). Android shows a **Download** banner for a new APK. iOS apps can't be updated
-outside the App Store.
+(**Settings → About**). iOS apps can't be updated outside the App Store.
+
+**Android** checks at startup and every six hours too. Lantern downloads the new APK itself, checks it
+against the SHA-256 in the hub's manifest, and hands it to Android's installer; Android only accepts it if
+it's signed with the same key as the installed app.
+
+- The first time, tap **Install** on the banner. Android asks you to let Lantern install apps, then to
+  confirm the update.
+- After that, Lantern is the app's installer of record, and on Android 12 and later updates install
+  without a prompt: Lantern downloads the update in the background and installs it the next time you
+  switch away from it (unless a bot is working). Turn this off in **Settings → About**.
+- Android closes Lantern to update it; open it again to use the new version.
 
 ### Official releases
 

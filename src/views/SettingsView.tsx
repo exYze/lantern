@@ -558,13 +558,16 @@ function AboutSection() {
       {isTauri && (
         <>
           <h3>Updates</h3>
-          <p className="muted small">New versions come from your Lantern Hub{platform.mobile ? "" : " and are checked against Lantern's signing key before they install"}.</p>
+          <p className="muted small">
+            New versions come from your Lantern Hub
+            {platform.os === "android" ? " and are checked against the checksum it publishes" : platform.mobile ? "" : " and are checked against Lantern's signing key before they install"}.
+          </p>
           <div>
             <Button onClick={() => void checkForUpdates({ manual: true })}>
               <RefreshCw size={16} /> Check for updates
             </Button>
           </div>
-          {!platform.mobile && <UpdateToggle />}
+          {(!platform.mobile || platform.os === "android") && <UpdateToggle />}
         </>
       )}
     </div>
@@ -576,7 +579,11 @@ function UpdateToggle() {
   return (
     <Toggle
       label="Install updates automatically"
-      description="Updates install when Lantern starts or while it's in the background, never in the middle of a bot's work."
+      description={
+        platform.os === "android"
+          ? "After the first update, new versions download in the background and install when you switch away from Lantern (Android 12 and later)."
+          : "Updates install when Lantern starts or while it's in the background, never in the middle of a bot's work."
+      }
       checked={autoUpdate}
       onChange={(v) => void updateSettings({ autoUpdate: v })}
     />

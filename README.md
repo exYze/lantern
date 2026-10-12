@@ -36,7 +36,7 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | 🔒 **Private** | Local SQLite database; secrets in the OS keychain on Windows, macOS and iOS |
 | 🔄 **Lantern Hub** | Optional self-hosted server: every device shares the same bots, chats, memories, settings and secrets, plus one workspace where bots' files and terminal live ([docs/HUB.md](docs/HUB.md)) |
 | 📦 **Sandboxes** | On the hub, a bot can keep its files and commands in its own bubblewrap sandbox, with or without internet access |
-| ⬆️ **Updates** | Desktop apps update themselves from your hub (signed installers); Android gets a download prompt |
+| ⬆️ **Updates** | Desktop apps update themselves from your hub (signed installers). Android installs updates in-app, and without a prompt once Lantern has updated itself once |
 
 ### Platform support
 
@@ -47,7 +47,7 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | Terminal | ✅ | ✅ | ✅ | via hub | via hub | via hub |
 | Local (stdio) MCP | ✅ | ✅ | ✅ | no | no | no |
 | Sync through a Lantern Hub | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Auto-updates from the hub | ✅ | ✅ | ✅ | download prompt | no | no |
+| Auto-updates from the hub | ✅ | ✅ | ✅ | ✅ (Android 12+, after the first) | no | no |
 | HTTP MCP servers | ✅ | ✅ | ✅ | ✅ | ✅ | CORS-limited |
 | Secrets storage | Credential Manager | Keychain | app DB | app DB | Keychain | localStorage |
 
