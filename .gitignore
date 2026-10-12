@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# The proprietary binary that was analyzed is never part of this repo
+*.exe
+!src-tauri/**/*.exe
+
+# Local AI-assistant memory files (claude-mem)
+CLAUDE.md
+
+# Built installers
+release/
+dist-linux/
+
+# Detailed analysis of the proprietary app stays local (not published)
+GROK_BOT_REPORT.md

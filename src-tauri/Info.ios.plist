@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Lantern records voice memos and sends them to the speech-to-text server you choose.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Lantern connects to model servers on your local network, such as Ollama or llama.cpp running on your computer.</string>
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>Lantern lets you attach images to a message.</string>
+</dict>
+</plist>
