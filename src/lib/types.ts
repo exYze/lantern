@@ -37,6 +37,9 @@ export interface AvatarSpec {
 
 export type ApprovalMode = "ask" | "auto-review" | "auto";
 
+/** Where a bot's file and terminal tools run when a Lantern Hub is connected. */
+export type Computer = "hub" | "device";
+
 export interface BotToolToggles {
   files: boolean;
   shell: boolean;
@@ -66,6 +69,8 @@ export interface Bot {
   approvalMode?: ApprovalMode;
   /** Overrides the global workspace folder (desktop). */
   workspace?: string;
+  /** Where file and terminal tools run: the shared Lantern Hub or this device. Unset follows Settings. */
+  computer?: Computer;
   templateId?: string;
   pinned?: boolean;
   createdAt: number;
@@ -216,8 +221,15 @@ export interface Settings {
   search: { kind: "duckduckgo" | "searxng"; url?: string };
   stt?: { providerId?: ID; baseUrl: string; model: string };
   timezone?: string;
+  /** Where bots' file and terminal tools run while a hub is connected (default: the hub). */
+  computer?: Computer;
+  /** This device only: install app updates automatically (default on). */
+  autoUpdate?: boolean;
   onboarded: boolean;
 }
+
+/** Settings that belong to one device and never sync through the hub. */
+export const DEVICE_SETTINGS = ["workspace", "onboarded", "autoUpdate"] as const;
 
 export const DEFAULT_SETTINGS: Settings = {
   theme: "system",

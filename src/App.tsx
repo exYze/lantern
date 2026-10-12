@@ -4,8 +4,11 @@ import { BotPanel } from "./components/BotPanel";
 import { ChatView } from "./components/ChatView";
 import { Sidebar } from "./components/Sidebar";
 import { ConfirmHost } from "./components/ui";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { startScheduler } from "./lib/routines";
 import { useApp } from "./lib/store";
+import { startSync } from "./lib/sync";
+import { startUpdateChecks } from "./lib/updates";
 import { Onboarding } from "./views/Onboarding";
 import { PluginsView } from "./views/PluginsView";
 import { RoutinesView } from "./views/RoutinesView";
@@ -67,7 +70,10 @@ export function App() {
   useTheme(theme);
 
   useEffect(() => {
-    if (ready) startScheduler();
+    if (!ready) return;
+    startScheduler();
+    void startSync().catch((e) => console.error("sync", e));
+    startUpdateChecks();
   }, [ready]);
 
   if (!ready) {
@@ -84,6 +90,7 @@ export function App() {
         <div className={`app${navOpen ? " nav-open" : ""}${detailsOpen ? " details-open" : ""}`}>
           <Sidebar />
           <main className="main">
+            <UpdateBanner />
             <Main />
           </main>
           {detailsOpen && <BotPanel />}

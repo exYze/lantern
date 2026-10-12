@@ -27,7 +27,35 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          (cd crates/lantern-tools && cargo test)
+          (cd hub && cargo test)
           cd src-tauri && cargo test --lib
+
+  hub:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: hub
+      - name: Build static Linux binaries (x86_64, arm64)
+        run: |
+          pip install ziglang cargo-zigbuild
+          cd hub
+          for t in x86_64 aarch64; do
+            cargo zigbuild --release --target $t-unknown-linux-musl
+            mkdir -p ../dist-hub/lantern-hub-$t
+            cp target/$t-unknown-linux-musl/release/lantern-hub deploy/* ../dist-hub/lantern-hub-$t/
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lantern-hub-linux
+          path: dist-hub/
+          if-no-files-found: error
 
   desktop:
     needs: test
@@ -64,6 +92,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npx tauri build ${{ matrix.args }}
+      # The macOS update archive. scripts/release.mjs signs it locally, so the signing key never lives in CI.
+      - name: Package the macOS app for updates
+        if: matrix.name == 'macos'
+        run: tar -czf src-tauri/target/universal-apple-darwin/release/bundle/macos/Lantern.app.tar.gz -C src-tauri/target/universal-apple-darwin/release/bundle/macos Lantern.app
       - uses: actions/upload-artifact@v4
         with:
           name: lantern-${{ matrix.name }}
@@ -74,6 +106,7 @@ jobs:
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
           if-no-files-found: error
 
   android:

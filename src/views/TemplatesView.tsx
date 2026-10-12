@@ -5,10 +5,12 @@ import { Button, Modal } from "../components/ui";
 import { createBlankBot, createBotFromTemplate } from "../lib/bots";
 import { capabilities } from "../lib/platform";
 import { describeSchedule } from "../lib/schedule";
+import { useApp } from "../lib/store";
 import { TEMPLATES, type BotTemplate } from "../lib/templates";
 import { PageHead } from "./PageHead";
 
 export function TemplatesView() {
+  const hasHub = useApp((s) => !!s.hub);
   const [category, setCategory] = useState<string>("All");
   const [open, setOpen] = useState<BotTemplate | null>(null);
   const categories = ["All", ...new Set(TEMPLATES.map((t) => t.category))];
@@ -81,7 +83,7 @@ export function TemplatesView() {
           }
         >
           <p className="lead">{open.tagline}</p>
-          {open.desktopOnly && !capabilities.shell && <p className="notice">This bot uses the terminal, which is only available in the desktop app. It will work with reduced abilities here.</p>}
+          {open.desktopOnly && !capabilities.shell && !hasHub && <p className="notice">This bot uses the terminal, which is only available in the desktop app. It will work with reduced abilities here.</p>}
           <h3>Instructions</h3>
           <p className="muted pre-wrap">{open.instructions}</p>
           <h3>Try asking</h3>

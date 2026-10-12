@@ -13,13 +13,15 @@ export interface PlatformInfo {
   version: string;
   shell: string | null;
   secretBackend: string;
+  /** The computer's name (desktop), used to label it on the hub. */
+  hostname?: string | null;
 }
 
 export let platform: PlatformInfo = {
   os: "web",
   arch: "",
   mobile: false,
-  version: "0.1.0",
+  version: "0.2.0",
   shell: null,
   secretBackend: "browser-storage",
 };
@@ -92,13 +94,24 @@ export interface SearchHit<T = unknown> {
   data: T;
 }
 
+/** Notified after local writes so the hub sync can pick them up. Writes made
+ *  with `quiet` (e.g. changes arriving from the hub) are not reported. */
+export const changeListeners: {
+  doc: ((collection: string, id: string) => void) | null;
+  secret: ((key: string) => void) | null;
+} = { doc: null, secret: null };
+
 export const db = {
-  async put(collection: string, id: string, data: unknown): Promise<void> {
-    if (isTauri) return invoke("db_put", { collection, id, data });
-    const store = await webStore("readwrite");
-    const existing = await idbReq<WebDoc | undefined>(store.get([collection, id]));
-    const doc: WebDoc = { collection, id, data, seq: existing?.seq ?? webSeq++, updatedAt: Date.now() };
-    await idbReq(store.put(doc));
+  async put(collection: string, id: string, data: unknown, quiet = false): Promise<void> {
+    if (isTauri) {
+      await invoke("db_put", { collection, id, data });
+    } else {
+      const store = await webStore("readwrite");
+      const existing = await idbReq<WebDoc | undefined>(store.get([collection, id]));
+      const doc: WebDoc = { collection, id, data, seq: existing?.seq ?? webSeq++, updatedAt: Date.now() };
+      await idbReq(store.put(doc));
+    }
+    if (!quiet) changeListeners.doc?.(collection, id);
   },
   async get<T>(collection: string, id: string): Promise<T | null> {
     if (isTauri) return invoke<T | null>("db_get", { collection, id });
@@ -110,15 +123,25 @@ export const db = {
     const docs = await idbReq<WebDoc[]>((await webStore("readonly")).index("collection").getAll(collection));
     return docs.sort((a, b) => a.seq - b.seq).map((d) => d.data as T);
   },
-  async delete(collection: string, id: string): Promise<void> {
-    if (isTauri) return invoke("db_delete", { collection, id });
-    await idbReq((await webStore("readwrite")).delete([collection, id]));
+  async delete(collection: string, id: string, quiet = false): Promise<void> {
+    if (isTauri) {
+      await invoke("db_delete", { collection, id });
+    } else {
+      await idbReq((await webStore("readwrite")).delete([collection, id]));
+    }
+    if (!quiet) changeListeners.doc?.(collection, id);
   },
-  async clear(collection: string): Promise<void> {
-    if (isTauri) return invoke("db_clear", { collection });
-    const store = await webStore("readwrite");
-    const keys = await idbReq(store.index("collection").getAllKeys(collection));
-    await Promise.all(keys.map((k) => idbReq(store.delete(k))));
+  async clear(collection: string, quiet = false): Promise<void> {
+    const listener = quiet ? null : changeListeners.doc;
+    const ids = listener ? (await db.list<{ id?: string }>(collection)).map((d) => d?.id).filter((id): id is string => !!id) : [];
+    if (isTauri) {
+      await invoke("db_clear", { collection });
+    } else {
+      const store = await webStore("readwrite");
+      const keys = await idbReq(store.index("collection").getAllKeys(collection));
+      await Promise.all(keys.map((k) => idbReq(store.delete(k))));
+    }
+    for (const id of ids) listener?.(collection, id);
   },
   async search<T>(prefix: string, query: string, limit = 50): Promise<SearchHit<T>[]> {
     if (isTauri) return invoke<SearchHit<T>[]>("db_search", { prefix, query, limit });
@@ -135,17 +158,19 @@ export const db = {
 // ---------------------------------------------------------------- secrets
 
 export const secrets = {
-  async set(key: string, value: string): Promise<void> {
-    if (isTauri) return invoke("secret_set", { key, value });
-    localStorage.setItem(`lantern.secret.${key}`, value);
+  async set(key: string, value: string, quiet = false): Promise<void> {
+    if (isTauri) await invoke("secret_set", { key, value });
+    else localStorage.setItem(`lantern.secret.${key}`, value);
+    if (!quiet) changeListeners.secret?.(key);
   },
   async get(key: string): Promise<string | null> {
     if (isTauri) return invoke<string | null>("secret_get", { key });
     return localStorage.getItem(`lantern.secret.${key}`);
   },
-  async delete(key: string): Promise<void> {
-    if (isTauri) return invoke("secret_delete", { key });
-    localStorage.removeItem(`lantern.secret.${key}`);
+  async delete(key: string, quiet = false): Promise<void> {
+    if (isTauri) await invoke("secret_delete", { key });
+    else localStorage.removeItem(`lantern.secret.${key}`);
+    if (!quiet) changeListeners.secret?.(key);
   },
 };
 

@@ -2,6 +2,7 @@
 // approval engine), feed results back, repeat until the model answers in text.
 
 import { decide, parseReview, REVIEW_SYSTEM_PROMPT, rulePatternForCommand } from "./approval";
+import { hubConnection, hubToolInfo, usesHub, type HubToolInfo } from "./hub";
 import { chatCompletion, complete, LlmError, type OAContentPart, type OAMessage, type OATool } from "./llm";
 import { getMcpClient, mcpToolName } from "./mcp";
 import { capabilities, notify, platform, secrets } from "./platform";
@@ -105,7 +106,7 @@ const toOATool = (t: ToolDef): OATool => ({ type: "function", function: { name: 
 
 // ------------------------------------------------------------------ prompt
 
-export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean, workspace: string, mcpErrors: string[]): string {
+export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean, workspace: string, mcpErrors: string[], hub?: HubToolInfo): string {
   const { memories, settings } = useApp.getState();
   const tz = settings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const now = new Date().toLocaleString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: tz });
@@ -115,10 +116,14 @@ export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean,
 
   lines.push("", "# Environment", `- Current date and time: ${now} (${tz})`, `- You are running in the Lantern app on ${platformLabel()}${platform.mobile ? " (mobile)" : ""}.`);
   const names = new Set(tools.map((t) => t.name));
-  if (useTools && (names.has("read_file") || names.has("shell"))) {
-    lines.push(`- Workspace folder: ${workspace} — relative paths resolve here.`);
+  const usesFiles = useTools && (names.has("read_file") || names.has("shell"));
+  if (usesFiles && hub) {
+    lines.push(`- Your files and terminal are on the user's Lantern Hub server (${hub.os}), shared by all of their devices — not on this ${platformLabel()} device.`);
   }
-  if (useTools && names.has("shell")) lines.push(`- Shell: ${platform.shell ?? "system shell"}. Commands run non-interactively in the workspace.`);
+  if (usesFiles) lines.push(`- Workspace folder: ${workspace} — relative paths resolve here.`);
+  if (useTools && names.has("shell")) {
+    lines.push(`- Shell: ${hub ? hub.shell : (platform.shell ?? "system shell")}. Commands run non-interactively in the workspace.`);
+  }
   if (useTools && bot.secretNames.length) {
     lines.push(`- Secrets available to shell commands as environment variables: ${bot.secretNames.map((n) => "$" + n).join(", ")}. Never print their values.`);
   }
@@ -275,19 +280,25 @@ export async function runAgent(conversationId: string, opts: { routineId?: strin
     const conv = state.conversations.find((c) => c.id === conversationId);
     bot = state.bots.find((b) => b.id === conv?.botId);
     if (!bot) throw new Error("This conversation's bot no longer exists.");
-    const workspace = workspaceFor(bot);
+    const remote = usesHub(bot);
+    let hubInfo: HubToolInfo | undefined;
+    if (remote) {
+      // Cached after the first call, so a short hub outage doesn't block chatting; tool calls then report the error.
+      hubInfo = await hubToolInfo().catch(() => hubConnection()?.tools ?? { workspace: "~/workspace", shell: "bash", os: "Linux", user: "" });
+    }
+    const workspace = hubInfo?.workspace ?? workspaceFor(bot);
     const env = await botEnv(bot);
     const secretValues = Object.values(env).filter((v) => v.length >= 4);
     const { provider: initialProvider, model } = resolveModel(bot);
     const { tools, mcpErrors } = await toolsFor(bot, workspace);
-    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal };
+    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal, remote };
     const settings = useApp.getState().settings;
 
     for (let step = 0; step < settings.maxSteps; step++) {
       if (abort.signal.aborted) break;
       const provider = useApp.getState().providers.find((p) => p.id === initialProvider.id) ?? initialProvider;
       const useTools = tools.length > 0 && !(provider.noToolModels ?? []).includes(model);
-      const system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors);
+      const system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo);
       const history = toOpenAIHistory(messagesOf(conversationId), Math.max(2000, settings.contextTokens - estimateTokens(system) - 1500), useTools);
 
       const assistant: ChatMessage = { id: uid("msg"), conversationId, role: "assistant", content: "", status: "streaming", model, createdAt: Date.now(), routineId: opts.routineId };
@@ -416,7 +427,7 @@ async function autoReview(tool: ToolDef, args: Record<string, unknown>, ctx: Too
         { role: "system", content: REVIEW_SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Latest user request:\n${env.lastUser.slice(0, 2000)}\n\nWorkspace: ${ctx.workspace}\nPlatform: ${platformLabel()}\nTool: ${tool.name} — ${tool.description.slice(0, 300)}\nArguments:\n${JSON.stringify(args, null, 2).slice(0, 4000)}`,
+          content: `Latest user request:\n${env.lastUser.slice(0, 2000)}\n\nWorkspace: ${ctx.workspace}\nPlatform: ${ctx.remote ? "Lantern Hub server (Linux, shared workspace)" : platformLabel()}\nTool: ${tool.name} — ${tool.description.slice(0, 300)}\nArguments:\n${JSON.stringify(args, null, 2).slice(0, 4000)}`,
         },
       ],
       { maxTokens: 1024, signal: ctx.signal },

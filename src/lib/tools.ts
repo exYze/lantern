@@ -2,6 +2,7 @@
 // a risk class for the approval engine, and a short human summary for the UI.
 
 import type { Risk } from "./approval";
+import { hubFs, hubShellRun, usesHub } from "./hub";
 import { capabilities, db, fs, platform, shellRun, webFetch } from "./platform";
 import { describeSchedule, nextRun, parseSchedule } from "./schedule";
 import { webSearch } from "./search";
@@ -22,7 +23,14 @@ export interface ToolContext {
   workspace: string;
   env: Record<string, string>;
   signal: AbortSignal;
+  /** File and terminal tools run on the Lantern Hub instead of this device. */
+  remote: boolean;
 }
+
+/** The file system the bot's tools use: the hub's shared workspace or this device. */
+const files = (ctx: ToolContext) => (ctx.remote ? hubFs : fs);
+const canUseFiles = (bot: Bot) => capabilities.files || usesHub(bot);
+const canUseShell = (bot: Bot) => capabilities.shell || usesHub(bot);
 
 export interface ToolDef {
   name: string;
@@ -30,8 +38,8 @@ export interface ToolDef {
   parameters: Record<string, unknown>;
   risk: Risk | ((args: Record<string, unknown>) => Risk);
   group: keyof BotToolToggles | "mcp";
-  /** Platform support (e.g. shell is desktop-only). */
-  available?: () => boolean;
+  /** Platform support (e.g. the terminal needs a desktop or the hub). */
+  available?: (bot: Bot) => boolean;
   summarize: (args: Record<string, unknown>) => string;
   run: (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
 }
@@ -52,7 +60,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     name: "read_file",
     group: "files",
     risk: "read",
-    available: () => capabilities.files,
+    available: canUseFiles,
     description:
       "Read a text file. Relative paths are inside the workspace. Returns numbered lines; use offset/limit to page through large files.",
     parameters: obj(
@@ -65,7 +73,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     ),
     summarize: (a) => `Read ${a.path}`,
     async run(a, ctx) {
-      const r = await fs.read(ctx.workspace, str(a.path, "path"), num(a.offset), num(a.limit));
+      const r = await files(ctx).read(ctx.workspace, str(a.path, "path"), num(a.offset), num(a.limit));
       const width = String(r.startLine + r.content.split("\n").length).length;
       const body = r.content
         ? r.content
@@ -80,17 +88,17 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     name: "write_file",
     group: "files",
     risk: "write",
-    available: () => capabilities.files,
+    available: canUseFiles,
     description: "Create or overwrite a file with the given content. Parent folders are created as needed.",
     parameters: obj({ path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
     summarize: (a) => `Write ${a.path}`,
-    run: (a, ctx) => fs.write(ctx.workspace, str(a.path, "path"), typeof a.content === "string" ? a.content : ""),
+    run: (a, ctx) => files(ctx).write(ctx.workspace, str(a.path, "path"), typeof a.content === "string" ? a.content : ""),
   },
   {
     name: "edit_file",
     group: "files",
     risk: "write",
-    available: () => capabilities.files,
+    available: canUseFiles,
     description:
       "Edit a file with exact search-and-replace. Each old_text must appear exactly once (include enough surrounding lines) unless replace_all is true. Read the file first.",
     parameters: obj(
@@ -114,7 +122,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     async run(a, ctx) {
       const edits = Array.isArray(a.edits) ? a.edits : [];
       if (!edits.length) throw new Error("edits must be a non-empty array");
-      return fs.edit(
+      return files(ctx).edit(
         ctx.workspace,
         str(a.path, "path"),
         edits.map((e: any) => ({ oldText: String(e.old_text ?? e.oldText ?? ""), newText: String(e.new_text ?? e.newText ?? ""), replaceAll: !!(e.replace_all ?? e.replaceAll) })),
@@ -125,12 +133,12 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     name: "list_dir",
     group: "files",
     risk: "read",
-    available: () => capabilities.files,
+    available: canUseFiles,
     description: "List the entries of a folder (defaults to the workspace).",
     parameters: obj({ path: { type: "string" } }),
     summarize: (a) => `List ${a.path || "workspace"}`,
     async run(a, ctx) {
-      const entries = await fs.list(ctx.workspace, opt(a.path));
+      const entries = await files(ctx).list(ctx.workspace, opt(a.path));
       if (!entries.length) return "(empty folder)";
       return entries.map((e) => (e.isDir ? `${e.name}/` : `${e.name}  (${e.size} bytes)`)).join("\n");
     },
@@ -139,20 +147,20 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     name: "find_files",
     group: "files",
     risk: "read",
-    available: () => capabilities.files,
+    available: canUseFiles,
     description: 'Find files by glob pattern, e.g. "*.md" or "src/**/*.ts". Respects .gitignore.',
     parameters: obj({ pattern: { type: "string" }, path: { type: "string", description: "Folder to search (default workspace)" } }, ["pattern"]),
     summarize: (a) => `Find ${a.pattern}`,
     async run(a, ctx) {
-      const files = await fs.find(ctx.workspace, str(a.pattern, "pattern"), opt(a.path), 200);
-      return files.length ? files.join("\n") : "No files found.";
+      const found = await files(ctx).find(ctx.workspace, str(a.pattern, "pattern"), opt(a.path), 200);
+      return found.length ? found.join("\n") : "No files found.";
     },
   },
   {
     name: "grep",
     group: "files",
     risk: "read",
-    available: () => capabilities.files,
+    available: canUseFiles,
     description: "Search file contents with a regular expression. Returns path:line: text for each match.",
     parameters: obj(
       {
@@ -167,7 +175,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     ),
     summarize: (a) => `Search for “${a.pattern}”`,
     run: (a, ctx) =>
-      fs.grep({
+      files(ctx).grep({
         root: ctx.workspace,
         pattern: str(a.pattern, "pattern"),
         path: opt(a.path),
@@ -182,19 +190,19 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     name: "delete_file",
     group: "files",
     risk: "write",
-    available: () => capabilities.files,
+    available: canUseFiles,
     description: "Delete a file or folder (folders are deleted recursively).",
     parameters: obj({ path: { type: "string" } }, ["path"]),
     summarize: (a) => `Delete ${a.path}`,
-    run: (a, ctx) => fs.delete(ctx.workspace, str(a.path, "path")),
+    run: (a, ctx) => files(ctx).delete(ctx.workspace, str(a.path, "path")),
   },
   {
     name: "shell",
     group: "shell",
     risk: "exec",
-    available: () => capabilities.shell,
+    available: canUseShell,
     description:
-      "Run a shell command on the user's computer in the workspace folder and return its output. Use non-interactive commands. Secrets the bot has are available as environment variables.",
+      "Run a shell command in the workspace folder and return its output. Use non-interactive commands. Secrets the bot has are available as environment variables.",
     parameters: obj(
       {
         command: { type: "string" },
@@ -204,7 +212,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     ),
     summarize: (a) => String(a.command ?? ""),
     async run(a, ctx) {
-      const r = await shellRun(str(a.command, "command"), {
+      const r = await (ctx.remote ? hubShellRun : shellRun)(str(a.command, "command"), {
         cwd: ctx.workspace,
         timeoutMs: (num(a.timeout_seconds) ?? 120) * 1000,
         env: ctx.env,
@@ -405,7 +413,7 @@ export function skillsForBot(bot: Bot) {
 }
 
 export function builtinToolsFor(bot: Bot): ToolDef[] {
-  return BUILTIN_TOOLS.filter((t) => (t.available ? t.available() : true) && t.group !== "mcp" && bot.tools[t.group as keyof BotToolToggles]);
+  return BUILTIN_TOOLS.filter((t) => (t.available ? t.available(bot) : true) && t.group !== "mcp" && bot.tools[t.group as keyof BotToolToggles]);
 }
 
 export function riskOf(tool: ToolDef, args: Record<string, unknown>): Risk {

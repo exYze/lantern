@@ -13,6 +13,8 @@ import type {
   Skill,
 } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
+import type { HubConnection } from "./hub";
+import type { SyncState } from "./sync";
 import { uid } from "./util";
 
 export type View =
@@ -27,6 +29,17 @@ export interface Toast {
   id: string;
   text: string;
   kind: "info" | "error" | "success";
+}
+
+export interface UpdateState {
+  version: string;
+  notes?: string;
+  /** Mobile: where to download the new build. Desktop installs in-app. */
+  downloadUrl?: string;
+  status: "available" | "downloading" | "installing";
+  /** 0–1 while downloading, when the size is known. */
+  progress?: number;
+  dismissed?: boolean;
 }
 
 export interface AppState {
@@ -50,6 +63,10 @@ export interface AppState {
   /** Conversations with an agent run in progress. */
   running: Record<string, number>;
   toasts: Toast[];
+  /** The Lantern Hub this device syncs with, if any. */
+  hub: HubConnection | null;
+  sync: SyncState;
+  update: UpdateState | null;
 }
 
 export const useApp = create<AppState>(() => ({
@@ -71,6 +88,9 @@ export const useApp = create<AppState>(() => ({
   navOpen: true,
   running: {},
   toasts: [],
+  hub: null,
+  sync: { status: "off", pending: 0 },
+  update: null,
 }));
 
 const get = () => useApp.getState();
@@ -89,6 +109,7 @@ export const C = {
 };
 
 const byUpdated = <T extends { updatedAt: number }>(a: T, b: T) => b.updatedAt - a.updatedAt;
+const sortBots = (bots: Bot[]) => bots.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt);
 
 export async function loadAll(): Promise<void> {
   const [settings, providers, bots, conversations, skills, memories, mcpServers, routines, defaultWorkspace] = await Promise.all([
@@ -103,7 +124,7 @@ export async function loadAll(): Promise<void> {
     pfs.defaultWorkspace().catch(() => ""),
   ]);
   const merged = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
-  const sortedBots = bots.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt);
+  const sortedBots = sortBots(bots);
   set({
     ready: true,
     settings: merged,
@@ -117,6 +138,36 @@ export async function loadAll(): Promise<void> {
     defaultWorkspace,
     activeBotId: sortedBots[0]?.id ?? null,
   });
+}
+
+/** Reloads collections that changed underneath the app (e.g. from another device via the hub). */
+export async function refreshFromDb(touched: Set<string>): Promise<void> {
+  const patch: Partial<AppState> = {};
+  if (touched.has(C.providers)) patch.providers = await db.list<Provider>(C.providers);
+  if (touched.has(C.bots)) patch.bots = sortBots(await db.list<Bot>(C.bots));
+  if (touched.has(C.conversations)) patch.conversations = (await db.list<Conversation>(C.conversations)).sort(byUpdated);
+  if (touched.has(C.skills)) patch.skills = await db.list<Skill>(C.skills);
+  if (touched.has(C.memories)) patch.memories = await db.list<Memory>(C.memories);
+  if (touched.has(C.mcp)) patch.mcpServers = await db.list<McpServer>(C.mcp);
+  if (touched.has(C.routines)) patch.routines = await db.list<Routine>(C.routines);
+  if (touched.has(C.meta)) patch.settings = { ...DEFAULT_SETTINGS, ...((await db.get<Settings>(C.meta, "settings")) ?? {}) };
+
+  const s = get();
+  const messages = { ...s.messages };
+  for (const c of touched) {
+    if (!c.startsWith("msg:")) continue;
+    const convId = c.slice(4);
+    // Only chats already open here need reloading; a chat running on this device owns its messages.
+    if (messages[convId] && !s.running[convId]) messages[convId] = (await db.list<ChatMessage>(c)).sort((a, b) => a.createdAt - b.createdAt);
+  }
+  if (patch.conversations) {
+    const alive = new Set(patch.conversations.map((c) => c.id));
+    for (const id of Object.keys(messages)) if (!alive.has(id) && !s.running[id]) delete messages[id];
+    if (s.activeConversationId && !alive.has(s.activeConversationId) && !s.running[s.activeConversationId]) patch.activeConversationId = null;
+  }
+  if (patch.bots && s.activeBotId && !patch.bots.some((b) => b.id === s.activeBotId)) patch.activeBotId = patch.bots[0]?.id ?? null;
+  if (!s.activeBotId && patch.bots?.length) patch.activeBotId = patch.bots[0].id;
+  set({ ...patch, messages });
 }
 
 export function toast(text: string, kind: Toast["kind"] = "info") {

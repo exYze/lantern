@@ -1,21 +1,27 @@
-import { Download, FolderOpen, KeyRound, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
-import { useRef, useState } from "react";
+import { Download, ExternalLink, FolderOpen, KeyRound, Pencil, Plus, RefreshCw, Smartphone, Trash2, Unplug, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { APPROVAL_MODES } from "../components/ChatView";
+import { HubConnectForm } from "../components/HubConnect";
 import { ModelPicker } from "../components/ModelPicker";
 import { ProviderForm } from "../components/ProviderForm";
 import { Button, confirmDialog, Field, IconButton, Modal, Pill, Toggle } from "../components/ui";
 import { listModels } from "../lib/llm";
-import { capabilities, fs, isTauri, pickFolder, platform } from "../lib/platform";
+import { hubDevices, type HubDevice } from "../lib/hub";
+import { capabilities, fs, isTauri, openExternal, pickFolder, platform } from "../lib/platform";
 import { addApprovalRule, deleteProvider, exportData, importData, saveProvider, toast, updateSettings, useApp, type View } from "../lib/store";
+import { disconnectHub, syncNow, type SyncState } from "../lib/sync";
 import { BUILTIN_TOOLS } from "../lib/tools";
+import { checkForUpdates } from "../lib/updates";
+import { timeAgo } from "../lib/util";
 import type { Provider } from "../lib/types";
 import { PageHead } from "./PageHead";
 import logo from "../assets/lantern.svg";
 
-type Section = "models" | "approvals" | "general" | "voice" | "data" | "about";
+type Section = "models" | "hub" | "approvals" | "general" | "voice" | "data" | "about";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "models", label: "Models" },
+  { id: "hub", label: "Hub" },
   { id: "approvals", label: "Approvals" },
   { id: "general", label: "General" },
   { id: "voice", label: "Voice" },
@@ -39,6 +45,7 @@ export function SettingsView() {
         </nav>
         <div className="settings-body">
           {section === "models" && <ModelsSection />}
+          {section === "hub" && <HubSection />}
           {section === "approvals" && <ApprovalsSection />}
           {section === "general" && <GeneralSection />}
           {section === "voice" && <VoiceSection />}
@@ -137,6 +144,169 @@ function ModelsSection() {
               if (!useApp.getState().settings.defaultModel && p.models[0]) void updateSettings({ defaultModel: { providerId: p.id, model: p.models[0] } });
             }}
           />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function HubSection() {
+  const hub = useApp((s) => s.hub);
+  const sync = useApp((s) => s.sync);
+  if (!hub) {
+    return (
+      <div className="form">
+        <h2>Lantern Hub</h2>
+        <p className="muted small">
+          A Lantern Hub is a small server you run (for example a VM on your home network, reachable over Tailscale). Every device connected to it shares one environment: bots, chats,
+          memories, skills, routines, plugins, model servers, settings and secrets, plus a shared workspace where bots' files and terminal commands live. It also serves app
+          installers and updates.
+        </p>
+        <HubConnectForm onConnected={() => toast("Connected to your hub.", "success")} />
+        <p className="muted small">
+          Set one up with <code>hub/deploy/install.sh</code> from the Lantern source (see docs/HUB.md).
+        </p>
+      </div>
+    );
+  }
+  return <HubConnected key={hub.deviceId} sync={sync} />;
+}
+
+function syncLabel(sync: SyncState): string {
+  const waiting = `${sync.pending} change${sync.pending === 1 ? "" : "s"}`;
+  switch (sync.status) {
+    case "online":
+      return sync.pending ? `Syncing ${waiting}…` : `Synced${sync.lastSyncAt ? ` · ${timeAgo(sync.lastSyncAt)}` : ""}`;
+    case "connecting":
+      return "Connecting…";
+    case "offline":
+      return `Offline${sync.pending ? ` · ${waiting} waiting` : ""}. Changes sync when the hub is reachable again.`;
+    case "error":
+      return sync.error ?? "Not syncing.";
+    default:
+      return "Not syncing.";
+  }
+}
+
+function HubConnected({ sync }: { sync: SyncState }) {
+  const hub = useApp((s) => s.hub)!;
+  const settings = useApp((s) => s.settings);
+  const [devices, setDevices] = useState<HubDevice[] | null>(null);
+  const [code, setCode] = useState<{ code: string; expiresAt: number } | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const loadDevices = () =>
+    hubDevices
+      .list()
+      .then(setDevices)
+      .catch(() => setDevices(null));
+  useEffect(() => {
+    void loadDevices();
+  }, []);
+
+  return (
+    <div className="form">
+      <h2>Lantern Hub</h2>
+      <div className="card">
+        <div className="list-main">
+          <strong>{hub.name}</strong>
+          <span className="muted small mono">{hub.url}</span>
+          <span className="hub-status small">
+            <span className={`sync-dot ${sync.status}`} />
+            {syncLabel(sync)}
+          </span>
+          {sync.status === "offline" && sync.error && <span className="muted small">{sync.error}</span>}
+        </div>
+      </div>
+      <div className="row wrap">
+        <Button
+          disabled={syncing || sync.status === "error"}
+          onClick={async () => {
+            setSyncing(true);
+            await syncNow();
+            setSyncing(false);
+          }}
+        >
+          <RefreshCw size={16} className={syncing ? "spin" : ""} /> Sync now
+        </Button>
+        <Button
+          onClick={async () => {
+            try {
+              setCode(await hubDevices.pairCode());
+            } catch (e) {
+              toast((e as Error).message, "error");
+            }
+          }}
+        >
+          <Smartphone size={16} /> Add a device
+        </Button>
+        <Button variant="ghost" onClick={() => void openExternal(hub.url)}>
+          <ExternalLink size={16} /> Downloads page
+        </Button>
+      </div>
+
+      <Field label="Bots' files and terminal" hint="On the hub, every device sees the same workspace, and phones get a terminal too. A bot can override this in its settings.">
+        <select className="select" value={settings.computer ?? "hub"} onChange={(e) => void updateSettings({ computer: e.target.value as "hub" | "device" })}>
+          <option value="hub">On the hub, shared by all devices{hub.tools ? ` (${hub.tools.workspace})` : ""}</option>
+          <option value="device">On each device</option>
+        </select>
+      </Field>
+
+      <h3>Devices</h3>
+      {devices ? (
+        <ul className="list">
+          {devices.map((d) => (
+            <li key={d.id}>
+              <div className="list-main">
+                <span>
+                  <strong>{d.name}</strong> {d.id === hub.deviceId && <Pill tone="accent">This device</Pill>}
+                </span>
+                <span className="muted small">
+                  {d.platform} · paired {new Date(d.createdAt).toLocaleDateString()} via {d.pairedVia === "tailscale" ? "Tailscale" : "code"} · seen {timeAgo(d.lastSeen)}
+                </span>
+              </div>
+              {d.id !== hub.deviceId && (
+                <IconButton
+                  label="Remove device"
+                  onClick={async () => {
+                    if (await confirmDialog({ title: `Remove ${d.name}?`, body: "It stops syncing right away. Its local data stays on it.", confirmLabel: "Remove", danger: true })) {
+                      await hubDevices.remove(d.id).catch((e) => toast((e as Error).message, "error"));
+                      await loadDevices();
+                    }
+                  }}
+                >
+                  <Trash2 size={15} />
+                </IconButton>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">The device list loads when the hub is reachable.</p>
+      )}
+
+      <div>
+        <Button
+          variant="danger"
+          onClick={async () => {
+            if (await confirmDialog({ title: "Disconnect from the hub?", body: "This device stops syncing. Everything already on it stays here.", confirmLabel: "Disconnect", danger: true })) {
+              await disconnectHub();
+            }
+          }}
+        >
+          <Unplug size={16} /> Disconnect this device
+        </Button>
+      </div>
+
+      {code && (
+        <Modal title="Add a device" onClose={() => setCode(null)}>
+          <div className="form">
+            <p>
+              On the new device, install Lantern from the downloads page and choose <strong>Connect to a Lantern Hub</strong>. Enter <code>{hub.url}</code> and this one-time code:
+            </p>
+            <div className="pair-code">{code.code}</div>
+            <p className="muted small">Valid until {new Date(code.expiresAt).toLocaleTimeString()}. Devices signed in to your Tailscale account connect without a code.</p>
+          </div>
         </Modal>
       )}
     </div>
@@ -297,10 +467,15 @@ function VoiceSection() {
 
 function DataSection() {
   const file = useRef<HTMLInputElement>(null);
+  const hub = useApp((s) => s.hub);
   return (
     <div className="form">
       <h2>Your data</h2>
-      <p className="muted small">Everything stays on this device: bots, chats, memories and settings in a local database, secrets in {platform.secretBackend === "keychain" ? "your system keychain" : "app-private storage"}. Exports never include secrets or API keys.</p>
+      <p className="muted small">
+        Bots, chats, memories and settings live in a local database on this device, secrets in {platform.secretBackend === "keychain" ? "your system keychain" : "app-private storage"}.{" "}
+        {hub ? `They also sync with your Lantern Hub (${hub.name}), which only your paired devices can reach.` : "Nothing leaves this device unless you connect a Lantern Hub."} Exports never
+        include secrets or API keys.
+      </p>
       <div className="row wrap">
         <Button
           onClick={async () => {
@@ -370,7 +545,31 @@ function AboutSection() {
         Lantern is free, open-source software under the MIT license. It is an independent project that works with open-source language models you run or choose yourself, and it is not affiliated with any AI
         vendor.
       </p>
-      <p className="muted small">No telemetry. Network requests go only to the model servers, MCP servers, search provider and websites you or your bots use.</p>
+      <p className="muted small">No telemetry. Network requests go only to your Lantern Hub, the model servers, MCP servers, search provider and websites you or your bots use.</p>
+      {isTauri && (
+        <>
+          <h3>Updates</h3>
+          <p className="muted small">New versions come from your Lantern Hub{platform.mobile ? "" : " and are checked against Lantern's signing key before they install"}.</p>
+          <div>
+            <Button onClick={() => void checkForUpdates({ manual: true })}>
+              <RefreshCw size={16} /> Check for updates
+            </Button>
+          </div>
+          {!platform.mobile && <UpdateToggle />}
+        </>
+      )}
     </div>
+  );
+}
+
+function UpdateToggle() {
+  const autoUpdate = useApp((s) => s.settings.autoUpdate !== false);
+  return (
+    <Toggle
+      label="Install updates automatically"
+      description="Updates install when Lantern starts or while it's in the background, never in the middle of a bot's work."
+      checked={autoUpdate}
+      onChange={(v) => void updateSettings({ autoUpdate: v })}
+    />
   );
 }

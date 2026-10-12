@@ -21,7 +21,7 @@ const GENERIC_STARTERS = ["What can you do?", "Help me plan my week", "Explain s
 
 function startersFor(bot: Bot): string[] {
   const t = TEMPLATES.find((x) => x.id === bot.templateId);
-  return t && (!t.desktopOnly || capabilities.shell) ? t.starters : GENERIC_STARTERS;
+  return t && (!t.desktopOnly || capabilities.shell || !!useApp.getState().hub) ? t.starters : GENERIC_STARTERS;
 }
 
 export function ChatView() {

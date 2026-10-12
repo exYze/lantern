@@ -5,6 +5,9 @@ dist/
 
 # Rust / Tauri
 src-tauri/target/
+hub/target/
+crates/*/target/
+crates/*/Cargo.lock
 src-tauri/gen/schemas/
 
 # The proprietary binary that was analyzed is never part of this repo
@@ -20,3 +23,8 @@ dist-linux/
 
 # Detailed analysis of the proprietary app stays local (not published)
 GROK_BOT_REPORT.md
+
+# Local build settings (hub address, publish target). Never committed: the repo is public.
+.env.local
+.env.*.local
+*.local

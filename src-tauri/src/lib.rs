@@ -4,6 +4,7 @@ mod http;
 mod mcp_stdio;
 mod secrets;
 mod shell;
+mod updates;
 
 use serde::Serialize;
 use tauri::Manager;
@@ -17,6 +18,27 @@ struct PlatformInfo {
     version: &'static str,
     shell: Option<String>,
     secret_backend: &'static str,
+    hostname: Option<String>,
+}
+
+/// The computer's name, used to label this device on the user's hub.
+fn hostname() -> Option<String> {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(out) = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output() {
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[tauri::command]
@@ -28,12 +50,16 @@ fn platform_info() -> PlatformInfo {
         version: env!("CARGO_PKG_VERSION"),
         shell: shell::shell_info(),
         secret_backend: secrets::secret_backend(),
+        hostname: hostname(),
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -44,6 +70,7 @@ pub fn run() {
             app.manage(http::HttpState::new());
             app.manage(shell::ShellState::default());
             app.manage(mcp_stdio::McpState::default());
+            app.manage(updates::PendingUpdate::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -74,6 +101,8 @@ pub fn run() {
             mcp_stdio::mcp_spawn,
             mcp_stdio::mcp_send,
             mcp_stdio::mcp_kill,
+            updates::update_check,
+            updates::update_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lantern");

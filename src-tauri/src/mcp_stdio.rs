@@ -75,7 +75,7 @@ pub async fn mcp_spawn(
         // `cmd /C` resolves npx.cmd, uvx.exe, etc. the same way a terminal would.
         let mut c = Command::new("cmd");
         c.arg("/C").arg(&command).args(&args);
-        c.creation_flags(crate::shell::desktop::CREATE_NO_WINDOW);
+        c.creation_flags(lantern_tools::shell::CREATE_NO_WINDOW);
         c
     };
     #[cfg(not(windows))]
@@ -122,7 +122,7 @@ pub async fn mcp_spawn(
         let code = tokio::select! {
             status = child.wait() => status.ok().and_then(|s| s.code()),
             _ = kill_rx => {
-                crate::shell::desktop::kill_tree(&mut child).await;
+                lantern_tools::shell::kill_tree(&mut child).await;
                 None
             }
         };

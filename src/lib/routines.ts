@@ -1,7 +1,9 @@
 // Runs routines (scheduled prompts) while the app is open. Runs missed by more
-// than an hour while the app was closed are skipped rather than replayed.
+// than an hour while the app was closed are skipped rather than replayed. With a
+// Lantern Hub, devices agree through a lease so each run happens only once.
 
 import { sendUserMessage } from "./agent";
+import { hubLease } from "./hub";
 import { CATCH_UP_WINDOW_MS, nextRun } from "./schedule";
 import { createConversation, saveRoutine, toast, useApp } from "./store";
 import type { Routine } from "./types";
@@ -29,6 +31,15 @@ function tick() {
   }
 }
 
+async function claimRun(routine: Routine): Promise<boolean> {
+  try {
+    return await hubLease(`routine:${routine.id}:${routine.nextRunAt ?? 0}`);
+  } catch {
+    // Hub unreachable: run here rather than miss the routine.
+    return true;
+  }
+}
+
 export function isRoutineActive(id: string): boolean {
   return active.has(id);
 }
@@ -43,6 +54,8 @@ export async function runRoutine(routine: Routine, manual = false): Promise<void
   }
   active.add(routine.id);
   try {
+    // With a hub, every device sees the routine come due; only the first to claim the run does it.
+    if (!manual && useApp.getState().hub && !(await claimRun(routine))) return;
     let convId = routine.conversationId && state.conversations.some((c) => c.id === routine.conversationId) ? routine.conversationId : undefined;
     if (!convId) convId = (await createConversation(bot.id, `Routine · ${routine.name}`, routine.id)).id;
     const now = Date.now();

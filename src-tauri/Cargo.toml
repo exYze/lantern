@@ -1,6 +1,6 @@
 [package]
 name = "lantern"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lantern — open-source AI bots for open-source LLMs"
 authors = ["Lantern contributors"]
 license = "MIT"
@@ -20,6 +20,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+lantern-tools = { path = "../crates/lantern-tools" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros", "rt"] }
@@ -28,9 +29,11 @@ futures-util = "0.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
 base64 = "0.22"
 html2text = "0.15"
-ignore = "0.4"
-globset = "0.4"
 regex = "1"
+
+# Desktop auto-updates (installers are signed; see docs/HUB.md).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
 
 # OS keychains: Windows Credential Manager, macOS/iOS Keychain.
 # Other platforms keep secrets in the app's private database.

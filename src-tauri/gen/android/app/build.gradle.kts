@@ -14,8 +14,29 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing: point LANTERN_ANDROID_SIGNING at a properties file (storeFile, password,
+// keyAlias), or put keystore.properties next to this project. Without one, release builds
+// are unsigned (as in CI).
+val signingProperties = Properties().apply {
+    val path = System.getenv("LANTERN_ANDROID_SIGNING")
+    val propFile = if (path.isNullOrBlank()) rootProject.file("keystore.properties") else file(path)
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 37
+    if (signingProperties.getProperty("storeFile") != null) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(signingProperties.getProperty("storeFile"))
+                storePassword = signingProperties.getProperty("password")
+                keyAlias = signingProperties.getProperty("keyAlias")
+                keyPassword = signingProperties.getProperty("password")
+            }
+        }
+    }
     namespace = "dev.lantern.bots"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
@@ -39,6 +60,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             optimization {
                enable = true
             }

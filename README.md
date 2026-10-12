@@ -7,7 +7,8 @@
 Lantern lets you create bots with their own personality, instructions, memories, skills, tools and
 scheduled routines, and run them on models **you** choose: Ollama, llama.cpp, vLLM, LM Studio,
 SGLang, LocalAI, Jan, KoboldCpp, text-generation-webui, or hosted open models (OpenRouter, Together,
-Groq, Hugging Face). Everything stays on your device. No account, no telemetry.
+Groq, Hugging Face). Everything stays on your devices: no account, no telemetry. Run a
+[Lantern Hub](docs/HUB.md) on your own server to share one environment across all of them.
 
 Lantern is a clean-room, open-source take on the "desktop agent bot" idea popularized by Grok Bot.
 The proprietary app was studied with [REA](https://github.com/morluto/rea) to learn *what* it does
@@ -30,14 +31,19 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | 🔑 **Secrets** | Write-only credentials exposed to terminal commands as env vars, redacted from tool output |
 | 🎙️ **Voice memos** | Transcribed by any OpenAI-compatible speech-to-text server (Speaches/faster-whisper, LocalAI…) |
 | 🔒 **Private** | Local SQLite database; secrets in the OS keychain on Windows, macOS and iOS |
+| 🔄 **Lantern Hub** | Optional self-hosted server: every device shares the same bots, chats, memories, settings and secrets, plus one workspace where bots' files and terminal live ([docs/HUB.md](docs/HUB.md)) |
+| ⬆️ **Updates** | Desktop apps update themselves from your hub (signed installers); Android gets a download prompt |
 
 ### Platform support
 
 | Capability | Windows | macOS | Linux | Android | iOS | Browser (dev) |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|
 | Chat, memories, skills, routines, web | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| File tools | ✅ | ✅ | ✅ | ✅ (app folder) | ✅ (app folder) | — |
-| Terminal & local (stdio) MCP | ✅ | ✅ | ✅ | — | — | — |
+| File tools | ✅ | ✅ | ✅ | ✅ (app folder or hub) | ✅ (app folder or hub) | via hub |
+| Terminal | ✅ | ✅ | ✅ | via hub | via hub | via hub |
+| Local (stdio) MCP | ✅ | ✅ | ✅ | — | — | — |
+| Sync through a Lantern Hub | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Auto-updates from the hub | ✅ | ✅ | ✅ | download prompt | — | — |
 | HTTP MCP servers | ✅ | ✅ | ✅ | ✅ | ✅ | CORS-limited |
 | Secrets storage | Credential Manager | Keychain | app DB | app DB | Keychain | localStorage |
 
@@ -124,6 +130,11 @@ npm run tauri ios build                   # needs an Apple development team for 
 Linux (deb, rpm, AppImage), Android (APK + AAB) and iOS (simulator build; signed IPA when an
 `APPLE_DEVELOPMENT_TEAM` secret is set) on every push.
 
+### Lantern Hub
+
+`hub/` is the self-hosted sync and workspace server (Rust, single binary). See [docs/HUB.md](docs/HUB.md)
+for setup and `scripts/release.mjs` for building, signing and publishing app releases to it.
+
 ### Testing without a model
 
 `npm run mock-llm` starts a tiny OpenAI-compatible server on `http://localhost:11500/v1` with two
@@ -148,6 +159,11 @@ src-tauri/               Rust backend (Tauri 2)
   src/fs_tools.rs        file tools (sandboxed to the workspace on mobile)
   src/shell.rs           terminal commands with timeout and process-tree kill (desktop)
   src/mcp_stdio.rs       launches local MCP servers (desktop)
+  src/updates.rs         signed auto-updates from the hub (desktop)
+crates/lantern-tools/    file and shell tools shared by the app and the hub
+hub/                     Lantern Hub: sync API, shared workspace, downloads and update manifest
+src/lib/sync.ts          local-first sync with the hub (outbox, live events, merge)
+src/lib/hub.ts           hub pairing, API and remote tools
 ```
 
 ## License

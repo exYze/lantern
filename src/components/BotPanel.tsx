@@ -1,6 +1,7 @@
 import { Dices, FolderOpen, KeyRound, Pencil, Play, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { usesHub } from "../lib/hub";
 import { capabilities, pickFolder, platform, secrets } from "../lib/platform";
 import { runRoutine } from "../lib/routines";
 import { describeSchedule } from "../lib/schedule";
@@ -17,7 +18,7 @@ type Tab = "profile" | "model" | "tools" | "skills" | "memory" | "plugins" | "se
 
 const TOOL_INFO: { key: keyof BotToolToggles; label: string; description: string; desktopOnly?: boolean }[] = [
   { key: "files", label: "Files", description: "Read, write, edit, search and delete files in the workspace." },
-  { key: "shell", label: "Terminal", description: "Run shell commands on this computer.", desktopOnly: true },
+  { key: "shell", label: "Terminal", description: "Run shell commands in the workspace.", desktopOnly: true },
   { key: "web", label: "Web", description: "Search the web and read pages." },
   { key: "memory", label: "Memory", description: "Remember facts and preferences across chats." },
   { key: "skills", label: "Skills", description: "Load and create skills (reusable instructions)." },
@@ -149,6 +150,8 @@ function ProfileTab({ bot }: { bot: Bot }) {
 function ModelTab({ bot }: { bot: Bot }) {
   const settings = useApp((s) => s.settings);
   const providers = useApp((s) => s.providers);
+  const hub = useApp((s) => s.hub);
+  const onHub = usesHub(bot);
   const workspace = workspaceFor(bot);
   return (
     <div className="form">
@@ -180,7 +183,16 @@ function ModelTab({ bot }: { bot: Bot }) {
           ))}
         </select>
       </Field>
-      {capabilities.files && (
+      {hub && (
+        <Field label="Files and terminal" hint="On the hub, this bot's files and commands are the same on every device.">
+          <select className="select" value={bot.computer ?? ""} onChange={(e) => void saveBot({ ...bot, computer: (e.target.value || undefined) as Bot["computer"] })}>
+            <option value="">Use the app setting ({(settings.computer ?? "hub") === "hub" ? "on the hub" : "on each device"})</option>
+            <option value="hub">On the hub{hub.tools ? ` (${hub.tools.workspace})` : ""}</option>
+            <option value="device">On each device</option>
+          </select>
+        </Field>
+      )}
+      {capabilities.files && !onHub && (
         <Field label="Workspace folder" hint="Relative file paths and terminal commands start here.">
           <div className="row">
             <input className="input mono" value={bot.workspace ?? ""} placeholder={workspace} onChange={(e) => void saveBot({ ...bot, workspace: e.target.value || undefined })} />
@@ -203,10 +215,12 @@ function ModelTab({ bot }: { bot: Bot }) {
 }
 
 function ToolsTab({ bot }: { bot: Bot }) {
+  useApp((s) => s.hub);
+  const onHub = usesHub(bot);
   return (
     <div className="form">
       {TOOL_INFO.map((t) => {
-        const unsupported = (t.desktopOnly && !capabilities.shell) || (t.key === "files" && !capabilities.files);
+        const unsupported = !onHub && ((t.desktopOnly && !capabilities.shell) || (t.key === "files" && !capabilities.files));
         return (
           <Toggle
             key={t.key}

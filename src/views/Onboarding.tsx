@@ -1,9 +1,11 @@
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Link2 } from "lucide-react";
 import { useState } from "react";
 import { Avatar } from "../components/Avatar";
+import { HubConnectForm } from "../components/HubConnect";
 import { ProviderForm } from "../components/ProviderForm";
 import { Button } from "../components/ui";
 import { createBlankBot, createBotFromTemplate } from "../lib/bots";
+import { DEFAULT_HUB_URL } from "../lib/hub";
 import { capabilities } from "../lib/platform";
 import { updateSettings, useApp } from "../lib/store";
 import { TEMPLATES } from "../lib/templates";
@@ -13,9 +15,10 @@ const FEATURED = ["companion", "research-scout", "code-pilot", "writing-partner"
 
 export function Onboarding() {
   const hasProvider = useApp((s) => s.providers.length > 0);
-  const [step, setStep] = useState<"welcome" | "server" | "bot">("welcome");
+  const hasHub = useApp((s) => !!s.hub);
+  const [step, setStep] = useState<"welcome" | "hub" | "server" | "bot">("welcome");
   const finish = () => updateSettings({ onboarded: true });
-  const featured = TEMPLATES.filter((t) => FEATURED.includes(t.id) && (!t.desktopOnly || capabilities.shell));
+  const featured = TEMPLATES.filter((t) => FEATURED.includes(t.id) && (!t.desktopOnly || capabilities.shell || hasHub));
 
   return (
     <div className="onboarding">
@@ -30,9 +33,31 @@ export function Onboarding() {
               <li>Your data stays on your device. No account, no telemetry</li>
               <li>Bots ask before they change things or run commands</li>
             </ul>
-            <Button variant="primary" onClick={() => setStep(hasProvider ? "bot" : "server")}>
-              Get started <ArrowRight size={16} />
-            </Button>
+            <div className="row wrap center">
+              <Button variant={DEFAULT_HUB_URL ? "secondary" : "primary"} onClick={() => setStep(hasProvider ? "bot" : "server")}>
+                Get started <ArrowRight size={16} />
+              </Button>
+              <Button variant={DEFAULT_HUB_URL ? "primary" : "secondary"} onClick={() => setStep("hub")}>
+                <Link2 size={16} /> Connect to a Lantern Hub
+              </Button>
+            </div>
+          </div>
+        )}
+        {step === "hub" && (
+          <div className="onboarding-step">
+            <h2>Connect to your Lantern Hub</h2>
+            <p className="muted">Your hub keeps one environment for all your devices. Once connected, your bots, chats and settings appear here.</p>
+            <HubConnectForm
+              onConnected={() => {
+                // A hub that already has an environment marks this device as set up; a new hub continues setup here.
+                if (!useApp.getState().settings.onboarded) setStep(useApp.getState().providers.length ? "bot" : "server");
+              }}
+            />
+            <div className="row-end">
+              <button className="link" onClick={() => setStep("welcome")}>
+                Back
+              </button>
+            </div>
           </div>
         )}
         {step === "server" && (

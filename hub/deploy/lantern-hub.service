@@ -1,0 +1,25 @@
+[Unit]
+Description=Lantern Hub (shared Lantern environment)
+Wants=network-online.target lantern-agent.service
+After=network-online.target lantern-agent.service
+
+[Service]
+User=lantern-hub
+Group=lantern-hub
+EnvironmentFile=/etc/lantern-hub.env
+ExecStart=/usr/local/bin/lantern-hub serve
+Restart=on-failure
+RestartSec=2
+# The API socket lives here; only this user (and root/tailscaled) can open it.
+RuntimeDirectory=lantern-hub
+RuntimeDirectoryMode=0750
+# Lets the downloads page listen on port 80.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/lantern-hub
+
+[Install]
+WantedBy=multi-user.target
