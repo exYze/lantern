@@ -87,7 +87,7 @@ docker run --rm -v "$PWD:/src:ro" -v "$PWD/dist-linux:/out" lantern-linux   # â†
 
 ### Android
 
-Needs the Android SDK, NDK (r28+) and JDK 17+, with `ANDROID_HOME`, `NDK_HOME` and `JAVA_HOME` set.
+Needs the Android SDK, NDK (r27+) and JDK 17+, with `ANDROID_HOME`, `NDK_HOME` and `JAVA_HOME` set.
 
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android

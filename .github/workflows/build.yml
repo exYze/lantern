@@ -89,12 +89,14 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
-      - name: Accept SDK licenses and install the NDK
-        # printf (not `yes`) so pipefail doesn't trip on SIGPIPE when sdkmanager exits.
+      # GitHub's Ubuntu runners ship the Android SDK and NDK; use them directly.
+      - name: Use the runner's Android SDK and NDK
         run: |
-          printf 'y\ny\ny\ny\ny\ny\ny\ny\ny\ny\n' | sdkmanager --licenses > /dev/null
-          printf 'y\ny\ny\ny\ny\n' | sdkmanager --install "ndk;28.2.13676358"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/ndk"
+          # Accept licenses so Gradle can fetch any missing platform; printf avoids SIGPIPE under pipefail.
+          printf 'y\ny\ny\ny\ny\ny\ny\ny\ny\ny\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
@@ -103,8 +105,6 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - name: Build APK and AAB
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
         run: npx tauri android build --apk --aab
       - uses: actions/upload-artifact@v4
         with:
