@@ -23,6 +23,7 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | 🧩 **Templates** | 12 ready-made bots: research scout, code pilot, morning brief, writing partner, data wrangler, sysadmin sidekick, study coach, planner… |
 | 💬 **Chat** | Streaming replies, reasoning ("thinking") display, Markdown, syntax-highlighted code, KaTeX math, Mermaid diagrams, image + text attachments, edit & resend, regenerate |
 | 🛠️ **Tools** | Files (read / write / edit / find / grep / delete), terminal (desktop), web search & fetch, memory, skills, routines, chat-history search |
+| 👥 **Subagents** | A bot hands self-contained tasks to helpers that work on their own and report back, several in parallel; isolated ones get a folder (and on the hub, a sandbox) of their own |
 | 🔌 **Plugins (MCP)** | Model Context Protocol servers over stdio (desktop) or Streamable HTTP; secrets for env vars and headers |
 | 🛡️ **Approvals** | *Ask first*, *Auto-review* (an LLM judges each action) or *Auto-approve*, plus allow/deny rules ("Always allow `git status`") |
 | 🧠 **Memories** | Bots remember facts you tell them; view and delete them any time |
@@ -32,6 +33,7 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | 🎙️ **Voice memos** | Transcribed by any OpenAI-compatible speech-to-text server (Speaches/faster-whisper, LocalAI…) |
 | 🔒 **Private** | Local SQLite database; secrets in the OS keychain on Windows, macOS and iOS |
 | 🔄 **Lantern Hub** | Optional self-hosted server: every device shares the same bots, chats, memories, settings and secrets, plus one workspace where bots' files and terminal live ([docs/HUB.md](docs/HUB.md)) |
+| 📦 **Sandboxes** | On the hub, a bot can keep its files and commands in its own bubblewrap sandbox, with or without internet access |
 | ⬆️ **Updates** | Desktop apps update themselves from your hub (signed installers); Android gets a download prompt |
 
 ### Platform support
@@ -51,7 +53,8 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 
 1. **Run a model server.** The easiest: install [Ollama](https://ollama.com), then
    `ollama pull qwen3` (or `llama3.2`, `gemma3`, `mistral`…).
-2. **Install Lantern** from the build artifacts (or build it yourself, below) and open it.
+2. **Install Lantern** from the [latest release](https://github.com/exYze/lantern/releases/latest)
+   (Windows, macOS, Linux and Android; or build it yourself, below) and open it.
 3. In onboarding, pick **Ollama**, press **Connect & list models**, then create your first bot.
 
 On a phone, `localhost` is the phone itself. Point Lantern at your computer's LAN address
@@ -133,7 +136,8 @@ Linux (deb, rpm, AppImage), Android (APK + AAB) and iOS (simulator build; signed
 ### Lantern Hub
 
 `hub/` is the self-hosted sync and workspace server (Rust, single binary). See [docs/HUB.md](docs/HUB.md)
-for setup and `scripts/release.mjs` for building, signing and publishing app releases to it.
+for setup (the [releases](https://github.com/exYze/lantern/releases) include the hub for x86_64 and ARM)
+and `scripts/release.mjs` for building, signing and publishing app releases to it and to GitHub.
 
 ### Testing without a model
 
@@ -164,6 +168,7 @@ crates/lantern-tools/    file and shell tools shared by the app and the hub
 hub/                     Lantern Hub: sync API, shared workspace, downloads and update manifest
 src/lib/sync.ts          local-first sync with the hub (outbox, live events, merge)
 src/lib/hub.ts           hub pairing, API and remote tools
+src/lib/subagents.ts     subagents (delegate_task): parallel helpers, isolated folders and sandboxes
 ```
 
 ## License

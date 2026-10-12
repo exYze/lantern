@@ -1,6 +1,6 @@
 [package]
 name = "lantern-tools"
-version = "0.2.0"
+version = "0.3.0"
 description = "File and shell tools shared by the Lantern app and Lantern Hub"
 license = "MIT"
 edition = "2021"

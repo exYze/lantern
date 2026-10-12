@@ -2,7 +2,7 @@
 // approval engine), feed results back, repeat until the model answers in text.
 
 import { decide, parseReview, REVIEW_SYSTEM_PROMPT, rulePatternForCommand } from "./approval";
-import { hubConnection, hubToolInfo, usesHub, type HubToolInfo } from "./hub";
+import { hubConnection, hubToolInfo, usesHub, type HubSandbox, type HubToolInfo } from "./hub";
 import { chatCompletion, complete, LlmError, type OAContentPart, type OAMessage, type OATool } from "./llm";
 import { getMcpClient, mcpToolName } from "./mcp";
 import { capabilities, notify, platform, secrets } from "./platform";
@@ -23,7 +23,8 @@ import {
   waitForApproval,
   workspaceFor,
 } from "./store";
-import { builtinToolsFor, platformLabel, riskOf, skillsForBot, type ToolContext, type ToolDef } from "./tools";
+import { DELEGATE_TOOL, MAX_PARALLEL_SUBAGENTS } from "./subagents";
+import { builtinToolsFor, platformLabel, riskOf, skillsForBot, toolEnabled, type ToolContext, type ToolDef } from "./tools";
 import type { Attachment, Bot, ChatMessage, Provider, ToolCall } from "./types";
 import { clip, safeJson, uid } from "./util";
 
@@ -70,8 +71,48 @@ async function botEnv(bot: Bot): Promise<Record<string, string>> {
   return env;
 }
 
-async function toolsFor(bot: Bot, workspace: string): Promise<{ tools: ToolDef[]; mcpErrors: string[] }> {
-  const tools = builtinToolsFor(bot);
+/** Where a run's file and terminal tools work, and what walls them in. */
+export interface ToolPlace {
+  workspace: string;
+  remote: boolean;
+  hubInfo?: HubToolInfo;
+  confine: boolean;
+  sandbox?: HubSandbox;
+  /** File / terminal tools are withheld because a sandbox the bot asks for can't be provided. */
+  noFiles: boolean;
+  noShell: boolean;
+  notes: string[];
+}
+
+/**
+ * A sandboxed bot works in its own folder in the hub's workspace, with commands in a
+ * bubblewrap sandbox. When that isn't possible its file or terminal tools are withheld:
+ * they never fall back to running unsandboxed.
+ */
+export function placeTools(bot: Bot, remote: boolean, hubInfo: HubToolInfo | undefined, deviceWorkspace: string): ToolPlace {
+  const { settings } = useApp.getState();
+  const place: ToolPlace = { workspace: hubInfo?.workspace ?? deviceWorkspace, remote, hubInfo, confine: false, noFiles: false, noShell: false, notes: [] };
+  const wantsSandbox = !!bot.sandbox && (bot.computer ?? settings.computer ?? "hub") === "hub";
+  if (!wantsSandbox) return place;
+  if (!remote || !hubInfo) {
+    place.noFiles = place.noShell = true;
+    place.notes.push("Your files and terminal are unavailable right now: they live in your sandbox on the user's Lantern Hub, and this device isn't connected to it.");
+    return place;
+  }
+  place.workspace = `${hubInfo.workspace.replace(/\/+$/, "")}/bots/${bot.id}`;
+  place.confine = true;
+  if (hubInfo.sandbox) {
+    place.sandbox = { dir: place.workspace, network: bot.sandbox!.network };
+  } else {
+    place.noShell = true;
+    place.notes.push("Your terminal is unavailable: the hub can't create sandboxes yet (it needs bubblewrap).");
+  }
+  return place;
+}
+
+export async function toolsFor(bot: Bot, workspace: string, withhold: { files?: boolean; shell?: boolean } = {}): Promise<{ tools: ToolDef[]; mcpErrors: string[] }> {
+  const tools = builtinToolsFor(bot).filter((t) => !(withhold.files && t.group === "files") && !(withhold.shell && t.group === "shell"));
+  if (toolEnabled(bot, "subagents")) tools.push(DELEGATE_TOOL);
   const mcpErrors: string[] = [];
   const servers = useApp.getState().mcpServers.filter((s) => s.enabled && bot.mcpServerIds.includes(s.id));
   await Promise.all(
@@ -102,27 +143,41 @@ async function toolsFor(bot: Bot, workspace: string): Promise<{ tools: ToolDef[]
   return { tools: tools.filter((t) => !seen.has(t.name) && seen.add(t.name)), mcpErrors };
 }
 
-const toOATool = (t: ToolDef): OATool => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } });
+export const toOATool = (t: ToolDef): OATool => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } });
 
 // ------------------------------------------------------------------ prompt
 
-export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean, workspace: string, mcpErrors: string[], hub?: HubToolInfo): string {
-  const { memories, settings } = useApp.getState();
+export function nowLine(): string {
+  const { settings } = useApp.getState();
   const tz = settings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const now = new Date().toLocaleString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: tz });
+  return `- Current date and time: ${now} (${tz})`;
+}
+
+export function sandboxLine(sandbox: HubSandbox): string {
+  return `- Commands run in a sandbox: only your workspace folder (and /tmp) can be written, the rest of the system is read-only, other files are hidden, and ${sandbox.network ? "the network is available" : "there is no network access"}.`;
+}
+
+export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean, workspace: string, mcpErrors: string[], hub?: HubToolInfo, place?: Pick<ToolPlace, "confine" | "sandbox" | "notes">): string {
+  const { memories } = useApp.getState();
   const lines: string[] = [];
   lines.push(`You are ${bot.name}${bot.tagline ? ` — ${bot.tagline}` : ""}.`);
   if (bot.instructions.trim()) lines.push("", bot.instructions.trim());
 
-  lines.push("", "# Environment", `- Current date and time: ${now} (${tz})`, `- You are running in the Lantern app on ${platformLabel()}${platform.mobile ? " (mobile)" : ""}.`);
+  lines.push("", "# Environment", nowLine(), `- You are running in the Lantern app on ${platformLabel()}${platform.mobile ? " (mobile)" : ""}.`);
   const names = new Set(tools.map((t) => t.name));
   const usesFiles = useTools && (names.has("read_file") || names.has("shell"));
   if (usesFiles && hub) {
     lines.push(`- Your files and terminal are on the user's Lantern Hub server (${hub.os}), shared by all of their devices — not on this ${platformLabel()} device.`);
   }
-  if (usesFiles) lines.push(`- Workspace folder: ${workspace} — relative paths resolve here.`);
+  if (usesFiles) lines.push(`- Workspace folder: ${workspace} — relative paths resolve here.${place?.confine ? " It's your own folder: you can't reach files outside it." : ""}`);
   if (useTools && names.has("shell")) {
     lines.push(`- Shell: ${hub ? hub.shell : (platform.shell ?? "system shell")}. Commands run non-interactively in the workspace.`);
+    if (place?.sandbox) lines.push(sandboxLine(place.sandbox));
+  }
+  for (const note of place?.notes ?? []) lines.push(`- ${note}`);
+  if (useTools && names.has(DELEGATE_TOOL.name)) {
+    lines.push("- You can hand self-contained tasks to subagents with `delegate_task`; several calls in one turn run in parallel.");
   }
   if (useTools && bot.secretNames.length) {
     lines.push(`- Secrets available to shell commands as environment variables: ${bot.secretNames.map((n) => "$" + n).join(", ")}. Never print their values.`);
@@ -283,22 +338,23 @@ export async function runAgent(conversationId: string, opts: { routineId?: strin
     const remote = usesHub(bot);
     let hubInfo: HubToolInfo | undefined;
     if (remote) {
-      // Cached after the first call, so a short hub outage doesn't block chatting; tool calls then report the error.
+      // Cached, so a short hub outage doesn't block chatting; tool calls then report the error.
       hubInfo = await hubToolInfo().catch(() => hubConnection()?.tools ?? { workspace: "~/workspace", shell: "bash", os: "Linux", user: "" });
     }
-    const workspace = hubInfo?.workspace ?? workspaceFor(bot);
+    const place = placeTools(bot, remote, hubInfo, workspaceFor(bot));
+    const workspace = place.workspace;
     const env = await botEnv(bot);
     const secretValues = Object.values(env).filter((v) => v.length >= 4);
     const { provider: initialProvider, model } = resolveModel(bot);
-    const { tools, mcpErrors } = await toolsFor(bot, workspace);
-    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal, remote };
+    const { tools, mcpErrors } = await toolsFor(bot, workspace, { files: place.noFiles, shell: place.noShell });
+    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal, remote, confine: place.confine, sandbox: place.sandbox, tools };
     const settings = useApp.getState().settings;
 
     for (let step = 0; step < settings.maxSteps; step++) {
       if (abort.signal.aborted) break;
       const provider = useApp.getState().providers.find((p) => p.id === initialProvider.id) ?? initialProvider;
       const useTools = tools.length > 0 && !(provider.noToolModels ?? []).includes(model);
-      const system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo);
+      const system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo, place);
       const history = toOpenAIHistory(messagesOf(conversationId), Math.max(2000, settings.contextTokens - estimateTokens(system) - 1500), useTools);
 
       const assistant: ChatMessage = { id: uid("msg"), conversationId, role: "assistant", content: "", status: "streaming", model, createdAt: Date.now(), routineId: opts.routineId };
@@ -365,8 +421,13 @@ export async function runAgent(conversationId: string, opts: { routineId?: strin
       if (!toolCalls.length) break;
 
       const lastUser = [...messagesOf(conversationId)].reverse().find((m) => m.role === "user")?.content ?? "";
-      for (const call of toolCalls) {
-        await runToolCall(call, assistant.id, tools, ctx, { provider, model, lastUser, secretValues, routineId: opts.routineId });
+      const callEnv: CallEnv = { provider, model, lastUser, secretValues, routineId: opts.routineId };
+      // Subagents asked for together work in parallel; everything else runs in order.
+      for (let i = 0; i < toolCalls.length; ) {
+        let j = i + 1;
+        if (toolCalls[i].name === DELEGATE_TOOL.name) while (j < toolCalls.length && toolCalls[j].name === DELEGATE_TOOL.name) j++;
+        await mapLimit(toolCalls.slice(i, j), MAX_PARALLEL_SUBAGENTS, (call) => runToolCall(call, assistant.id, tools, ctx, callEnv));
+        i = j;
       }
       if (step === settings.maxSteps - 1) {
         toast(`${bot.name} reached the limit of ${settings.maxSteps} steps. Say “continue” to keep going.`, "info");
@@ -400,12 +461,21 @@ export async function runAgent(conversationId: string, opts: { routineId?: strin
   return outcome;
 }
 
-interface CallEnv {
+export interface CallEnv {
   provider: Provider;
   model: string;
   lastUser: string;
   secretValues: string[];
   routineId?: string;
+}
+
+/** Runs `fn` over `items` with at most `limit` running at once. */
+export async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<unknown>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 function redact(text: string, values: string[]): string {
@@ -427,7 +497,7 @@ async function autoReview(tool: ToolDef, args: Record<string, unknown>, ctx: Too
         { role: "system", content: REVIEW_SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Latest user request:\n${env.lastUser.slice(0, 2000)}\n\nWorkspace: ${ctx.workspace}\nPlatform: ${ctx.remote ? "Lantern Hub server (Linux, shared workspace)" : platformLabel()}\nTool: ${tool.name} — ${tool.description.slice(0, 300)}\nArguments:\n${JSON.stringify(args, null, 2).slice(0, 4000)}`,
+          content: `Latest user request:\n${env.lastUser.slice(0, 2000)}\n\nWorkspace: ${ctx.workspace}\nPlatform: ${ctx.remote ? `Lantern Hub server (Linux, ${ctx.sandbox ? `bubblewrap sandbox${ctx.sandbox.network ? "" : " without network"}` : "shared workspace"})` : platformLabel()}\nTool: ${tool.name} — ${tool.description.slice(0, 300)}\nArguments:\n${JSON.stringify(args, null, 2).slice(0, 4000)}`,
         },
       ],
       { maxTokens: 1024, signal: ctx.signal },
@@ -440,10 +510,25 @@ async function autoReview(tool: ToolDef, args: Record<string, unknown>, ctx: Too
 }
 
 async function runToolCall(call: ToolCall, assistantId: string, tools: ToolDef[], ctx: ToolContext, env: CallEnv) {
-  const { conversationId, bot, signal } = ctx;
+  const { conversationId } = ctx;
   const update = (patch: Partial<ToolCall>, persist = false) =>
     patchMessage(conversationId, assistantId, (m) => ({ toolCalls: m.toolCalls?.map((c) => (c.id === call.id ? { ...c, ...patch } : c)) }), persist);
+  const result = await executeToolCall(call, tools, ctx, env, update);
+  await appendMessage({ id: uid("msg"), conversationId, role: "tool", toolCallId: call.id, toolName: call.name, content: result, createdAt: Date.now() });
+}
 
+/**
+ * Approves (or not) and runs one tool call, reporting its state through `update`.
+ * Returns the result text for the model.
+ */
+export async function executeToolCall(
+  call: ToolCall,
+  tools: ToolDef[],
+  ctx: ToolContext,
+  env: CallEnv,
+  update: (patch: Partial<ToolCall>, persist?: boolean) => void,
+): Promise<string> {
+  const { bot, signal } = ctx;
   let result: string;
   let status: ToolCall["status"] = "done";
   const tool = tools.find((t) => t.name === call.name);
@@ -455,8 +540,7 @@ async function runToolCall(call: ToolCall, assistantId: string, tools: ToolDef[]
   } catch (e) {
     result = `Error: ${(e as Error).message}`;
     update({ status: "error", result }, true);
-    await appendMessage({ id: uid("msg"), conversationId, role: "tool", toolCallId: call.id, toolName: call.name, content: result, createdAt: Date.now() });
-    return;
+    return result;
   }
 
   const settings = useApp.getState().settings;
@@ -483,8 +567,7 @@ async function runToolCall(call: ToolCall, assistantId: string, tools: ToolDef[]
       if (answer === "deny") {
         result = signal.aborted ? "Cancelled." : "The user declined this action. Don't retry it; ask them or choose another approach.";
         update({ status: "denied", result }, true);
-        await appendMessage({ id: uid("msg"), conversationId, role: "tool", toolCallId: call.id, toolName: call.name, content: result, createdAt: Date.now() });
-        return;
+        return result;
       }
       if (answer === "always") {
         await addApprovalRule({ tool: tool!.name, pattern: tool!.name === "shell" ? rulePatternForCommand(String(args.command ?? "")) : "", decision: "allow" });
@@ -496,7 +579,7 @@ async function runToolCall(call: ToolCall, assistantId: string, tools: ToolDef[]
 
     update({ status: "running", approval: via, startedAt: Date.now() });
     try {
-      result = await tool!.run(args, ctx);
+      result = await tool!.run(args, { ...ctx, onProgress: update });
     } catch (e) {
       status = "error";
       result = signal.aborted ? "Cancelled by the user." : `Error: ${(e as Error)?.message ?? String(e)}`;
@@ -505,5 +588,5 @@ async function runToolCall(call: ToolCall, assistantId: string, tools: ToolDef[]
 
   result = redact(clip(result, MAX_TOOL_RESULT_CHARS), env.secretValues);
   update({ status, result, finishedAt: Date.now() }, true);
-  await appendMessage({ id: uid("msg"), conversationId, role: "tool", toolCallId: call.id, toolName: call.name, content: result, createdAt: Date.now() });
+  return result;
 }

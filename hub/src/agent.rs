@@ -6,7 +6,7 @@
 //! socket: one JSON request line in, one JSON response line out.
 
 use lantern_tools::fs::{self, Edit, GrepRequest};
-use lantern_tools::shell::{ShellRequest, ShellRunner};
+use lantern_tools::shell::{Sandbox, ShellRequest, ShellRunner};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -15,13 +15,14 @@ use std::path::{Path, PathBuf};
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ToolRequest {
     Info,
-    FsRead { root: String, path: String, offset: Option<usize>, limit: Option<usize> },
-    FsWrite { root: String, path: String, content: String },
-    FsEdit { root: String, path: String, edits: Vec<Edit> },
-    FsList { root: String, path: Option<String> },
-    FsFind { root: String, pattern: String, path: Option<String>, limit: Option<usize> },
-    FsGrep { request: GrepRequest },
-    FsDelete { root: String, path: String },
+    // `confine`: every path must stay inside `root` (a sandboxed bot's or subagent's folder).
+    FsRead { root: String, path: String, offset: Option<usize>, limit: Option<usize>, #[serde(default)] confine: bool },
+    FsWrite { root: String, path: String, content: String, #[serde(default)] confine: bool },
+    FsEdit { root: String, path: String, edits: Vec<Edit>, #[serde(default)] confine: bool },
+    FsList { root: String, path: Option<String>, #[serde(default)] confine: bool },
+    FsFind { root: String, pattern: String, path: Option<String>, limit: Option<usize>, #[serde(default)] confine: bool },
+    FsGrep { request: GrepRequest, #[serde(default)] confine: bool },
+    FsDelete { root: String, path: String, #[serde(default)] confine: bool },
     ShellRun { request: ShellRequest },
     ShellCancel { id: String },
 }
@@ -45,12 +46,27 @@ fn os_name() -> String {
 pub struct LocalTools {
     workspace: PathBuf,
     shell: ShellRunner,
+    sandbox: tokio::sync::OnceCell<bool>,
 }
 
 impl LocalTools {
     pub fn new(workspace: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&workspace);
-        LocalTools { workspace, shell: ShellRunner::default() }
+        LocalTools { workspace, shell: ShellRunner::default(), sandbox: tokio::sync::OnceCell::new() }
+    }
+
+    /// Whether bubblewrap sandboxes work on this machine (checked once).
+    async fn can_sandbox(&self) -> bool {
+        *self.sandbox.get_or_init(lantern_tools::shell::sandbox_available).await
+    }
+
+    /// Sandboxes live inside the shared workspace, so the user's other bots can look into them.
+    fn check_sandbox(&self, sb: &Sandbox) -> Result<(), String> {
+        let dir = fs::normalize(Path::new(&sb.dir));
+        if dir == fs::normalize(&self.workspace) || !dir.starts_with(fs::normalize(&self.workspace)) {
+            return Err(format!("a sandbox folder must be inside the workspace ({})", self.workspace.display()));
+        }
+        Ok(())
     }
 
     pub async fn handle(&self, req: ToolRequest) -> Result<Value, String> {
@@ -60,16 +76,25 @@ impl LocalTools {
                 "shell": lantern_tools::shell::shell_name(),
                 "os": os_name(),
                 "user": std::env::var("USER").unwrap_or_default(),
+                "sandbox": self.can_sandbox().await,
             })),
             // File operations can block on large trees; keep them off the async workers.
-            ToolRequest::FsRead { root, path, offset, limit } => blocking(move || to_json(fs::read(&root, &path, offset, limit, false))).await,
-            ToolRequest::FsWrite { root, path, content } => blocking(move || to_json(fs::write(&root, &path, &content, false))).await,
-            ToolRequest::FsEdit { root, path, edits } => blocking(move || to_json(fs::edit(&root, &path, &edits, false))).await,
-            ToolRequest::FsList { root, path } => blocking(move || to_json(fs::list(&root, path.as_deref(), false))).await,
-            ToolRequest::FsFind { root, pattern, path, limit } => blocking(move || to_json(fs::find(&root, &pattern, path.as_deref(), limit, false))).await,
-            ToolRequest::FsGrep { request } => blocking(move || to_json(fs::grep(&request, false))).await,
-            ToolRequest::FsDelete { root, path } => blocking(move || to_json(fs::delete(&root, &path, false))).await,
+            ToolRequest::FsRead { root, path, offset, limit, confine } => blocking(move || to_json(fs::read(&root, &path, offset, limit, confine))).await,
+            ToolRequest::FsWrite { root, path, content, confine } => blocking(move || to_json(fs::write(&root, &path, &content, confine))).await,
+            ToolRequest::FsEdit { root, path, edits, confine } => blocking(move || to_json(fs::edit(&root, &path, &edits, confine))).await,
+            ToolRequest::FsList { root, path, confine } => blocking(move || to_json(fs::list(&root, path.as_deref(), confine))).await,
+            ToolRequest::FsFind { root, pattern, path, limit, confine } => {
+                blocking(move || to_json(fs::find(&root, &pattern, path.as_deref(), limit, confine))).await
+            }
+            ToolRequest::FsGrep { request, confine } => blocking(move || to_json(fs::grep(&request, confine))).await,
+            ToolRequest::FsDelete { root, path, confine } => blocking(move || to_json(fs::delete(&root, &path, confine))).await,
             ToolRequest::ShellRun { mut request } => {
+                if let Some(sb) = &request.sandbox {
+                    self.check_sandbox(sb)?;
+                    if !self.can_sandbox().await {
+                        return Err("This hub can't create sandboxes: install bubblewrap (see docs/HUB.md, Sandboxes).".into());
+                    }
+                }
                 if request.cwd.as_deref().map_or(true, str::is_empty) {
                     request.cwd = Some(self.workspace.to_string_lossy().into_owned());
                 }
@@ -176,13 +201,32 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lantern-hub-test-{}", std::process::id()));
         let tools = LocalTools::new(dir.clone());
         let root = dir.to_string_lossy().into_owned();
-        tools.handle(ToolRequest::FsWrite { root: root.clone(), path: "a/b.txt".into(), content: "hello\nworld".into() }).await.unwrap();
-        let r = tools.handle(ToolRequest::FsRead { root: root.clone(), path: "a/b.txt".into(), offset: None, limit: None }).await.unwrap();
+        tools.handle(ToolRequest::FsWrite { root: root.clone(), path: "a/b.txt".into(), content: "hello\nworld".into(), confine: false }).await.unwrap();
+        let r = tools.handle(ToolRequest::FsRead { root: root.clone(), path: "a/b.txt".into(), offset: None, limit: None, confine: false }).await.unwrap();
         assert_eq!(r["content"], "hello\nworld");
         assert_eq!(r["totalLines"], 2);
         let req: ToolRequest = serde_json::from_value(json!({"op": "shell_run", "request": {"id": "t1", "command": "echo hi"}})).unwrap();
         let out = tools.handle(req).await.unwrap();
         assert!(out["stdout"].as_str().unwrap().contains("hi"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn confined_tools_and_sandboxes_stay_in_their_folder() {
+        let dir = std::env::temp_dir().join(format!("lantern-hub-confine-{}", std::process::id()));
+        let tools = LocalTools::new(dir.clone());
+        let bot = dir.join("bots").join("b1").to_string_lossy().into_owned();
+        let write = |path: &str, confine| ToolRequest::FsWrite { root: bot.clone(), path: path.into(), content: "x".into(), confine };
+        assert!(tools.handle(write("notes.txt", true)).await.is_ok());
+        assert!(tools.handle(write("../b2/notes.txt", true)).await.is_err());
+        assert!(tools.handle(write("../b2/notes.txt", false)).await.is_ok());
+
+        let run = |sandbox_dir: &str| {
+            serde_json::from_value::<ToolRequest>(json!({"op": "shell_run", "request": {"id": "s", "command": "true", "sandbox": {"dir": sandbox_dir}}})).unwrap()
+        };
+        let outside = std::env::temp_dir().to_string_lossy().into_owned();
+        assert!(tools.handle(run(&outside)).await.unwrap_err().contains("inside the workspace"));
+        assert!(tools.handle(run(&dir.to_string_lossy())).await.unwrap_err().contains("inside the workspace"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Adds an official Lantern release from GitHub to this hub, so the apps connected
+# to it can download it and update to it. Installers are checked against the
+# release's SHA-256 list; the apps also check each update's signature.
+#   lantern-hub-fetch-release [tag]     default: the latest release, e.g. v0.3.0
+# Settings: LANTERN_RELEASES_REPO (default exYze/lantern), LANTERN_HUB_RELEASES
+# (default /srv/lantern/releases). Run it as the user that owns the releases folder.
+set -euo pipefail
+
+REPO=${LANTERN_RELEASES_REPO:-exYze/lantern}
+DIR=${LANTERN_HUB_RELEASES:-/srv/lantern/releases}
+TAG=${1:-latest}
+[[ $TAG == latest ]] && path=latest || path="tags/$TAG"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+curl -fsSL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/$path" -o "$work/github.json"
+
+# The release's asset URLs, then its manifest (release.json, the same file the hub serves from).
+python3 - "$work/github.json" > "$work/assets.tsv" <<'EOF'
+import json, sys
+for a in json.load(open(sys.argv[1]))["assets"]:
+    print(f'{a["name"]}\t{a["browser_download_url"]}')
+EOF
+url_of() { awk -F'\t' -v n="$1" '$1 == n { print $2 }' "$work/assets.tsv"; }
+manifest=$(url_of release.json)
+[[ -n $manifest ]] || { echo "The release has no release.json, so it can't be served by a hub." >&2; exit 1; }
+curl -fsSL "$manifest" -o "$work/release.json"
+
+version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$work/release.json")
+[[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "Unexpected version: $version" >&2; exit 1; }
+if [[ -f $DIR/$version/release.json ]]; then
+  echo "Lantern $version is already on this hub."
+  exit 0
+fi
+
+stage="$DIR/.$version.partial"
+rm -rf "$stage"
+mkdir -p "$stage"
+python3 -c 'import json,sys; [print(f["name"], f["sha256"]) for f in json.load(open(sys.argv[1]))["files"]]' "$work/release.json" |
+  while read -r name sha; do
+    [[ $name =~ ^[0-9A-Za-z._+-]+$ ]] || { echo "Unexpected file name: $name" >&2; exit 1; }
+    url=$(url_of "$name")
+    [[ -n $url ]] || { echo "The release is missing $name." >&2; exit 1; }
+    echo "  $name"
+    curl -fsSL "$url" -o "$stage/$name"
+    echo "$sha  $stage/$name" | sha256sum -c --quiet - || { echo "$name doesn't match its checksum." >&2; exit 1; }
+  done
+
+# The hub lists a release once its release.json exists, so it goes in last.
+rm -rf "${DIR:?}/$version"
+mv "$stage" "$DIR/$version"
+cp "$work/release.json" "$DIR/$version/release.json"
+echo "Added Lantern $version. Desktop apps connected to this hub will update to it."

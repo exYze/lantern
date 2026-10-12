@@ -48,6 +48,14 @@ export interface BotToolToggles {
   routines: boolean;
   skills: boolean;
   conversationSearch: boolean;
+  /** Hand tasks to subagents (missing on bots created before 0.3: on). */
+  subagents?: boolean;
+}
+
+/** Runs a bot's files and commands in its own sandbox folder on the hub. */
+export interface BotSandbox {
+  /** Commands in the sandbox may use the network. */
+  network: boolean;
 }
 
 export interface Bot {
@@ -71,6 +79,8 @@ export interface Bot {
   workspace?: string;
   /** Where file and terminal tools run: the shared Lantern Hub or this device. Unset follows Settings. */
   computer?: Computer;
+  /** On the hub: keep this bot's files and commands in its own sandbox (bubblewrap). */
+  sandbox?: BotSandbox;
   templateId?: string;
   pinned?: boolean;
   createdAt: number;
@@ -117,6 +127,27 @@ export interface ToolCall {
   review?: { verdict: "allow" | "ask"; reason: string };
   startedAt?: number;
   finishedAt?: number;
+  /** delegate_task: what the subagent is doing / did. */
+  subagent?: SubagentRun;
+}
+
+export interface SubagentStep {
+  id: string;
+  content: string;
+  toolCalls?: ToolCall[];
+  status: "streaming" | "done" | "error";
+}
+
+export interface SubagentRun {
+  title: string;
+  model: string;
+  /** Works in its own folder instead of the parent bot's workspace. */
+  isolated: boolean;
+  /** Its commands run in a sandbox on the hub. */
+  sandboxed: boolean;
+  network: boolean;
+  folder: string;
+  steps: SubagentStep[];
 }
 
 export interface ChatMessage {
@@ -251,4 +282,5 @@ export const DEFAULT_TOOLS: BotToolToggles = {
   routines: true,
   skills: true,
   conversationSearch: true,
+  subagents: true,
 };

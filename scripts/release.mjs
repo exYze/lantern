@@ -5,6 +5,7 @@
 //   node scripts/release.mjs build [windows,linux,android]   build on this machine
 //   node scripts/release.mjs fetch-ci [run-id]               add macOS and iOS builds from a GitHub Actions run (needs gh)
 //   node scripts/release.mjs publish [--notes "…"]           upload release/<version>/ to the hub
+//   node scripts/release.mjs github [run-id] [--notes "…"]   publish a CI run's builds as a GitHub Release (needs gh)
 // Add --version X to work on a version other than the one in package.json.
 //
 // Settings come from the environment or .env.local (never committed):
@@ -13,13 +14,13 @@
 //   LANTERN_PUBLISH_DIR       releases folder on the server (default /srv/lantern/releases)
 //   LANTERN_UPDATER_KEY       updater signing key (default ~/.lantern/updater.key)
 //   LANTERN_ANDROID_SIGNING   Android signing properties (default ~/.lantern/android-signing.properties)
-//   GH                        GitHub CLI to use for fetch-ci (default gh)
+//   GH                        GitHub CLI to use for fetch-ci and github (default gh)
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 loadEnvLocal();
@@ -122,18 +123,26 @@ function buildAndroid() {
 
 // ------------------------------------------------------------------ CI builds (macOS, iOS)
 
-function fetchCi(runId) {
-  const gh = process.env.GH || "gh";
+const gh = () => process.env.GH || "gh";
+
+function repoSlug() {
   const remote = spawnSync("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8" }).stdout.trim();
-  const repo = remote.replace(/^.*github\.com[:/]/, "").replace(/\.git$/, "");
-  if (!runId) {
-    const r = spawnSync(gh, ["run", "list", "-R", repo, "--workflow", "build.yml", "--branch", "main", "--status", "success", "--limit", "1", "--json", "databaseId"], { encoding: "utf8" });
-    runId = JSON.parse(r.stdout || "[]")[0]?.databaseId;
-    if (!runId) throw new Error("No successful CI run found.");
-  }
+  return remote.replace(/^.*github\.com[:/]/, "").replace(/\.git$/, "");
+}
+
+function latestGreenRun(repo) {
+  const r = spawnSync(gh(), ["run", "list", "-R", repo, "--workflow", "build.yml", "--branch", "main", "--status", "success", "--limit", "1", "--json", "databaseId"], { encoding: "utf8" });
+  const runId = JSON.parse(r.stdout || "[]")[0]?.databaseId;
+  if (!runId) throw new Error("No successful CI run found.");
+  return String(runId);
+}
+
+function fetchCi(runId) {
+  const repo = repoSlug();
+  runId ||= latestGreenRun(repo);
   const dir = join(tmpdir(), `lantern-ci-${runId}`);
   rmSync(dir, { recursive: true, force: true });
-  run(gh, ["run", "download", String(runId), "-R", repo, "-D", dir, "-n", "lantern-macos", "-n", "lantern-ios"]);
+  run(gh(), ["run", "download", String(runId), "-R", repo, "-D", dir, "-n", "lantern-macos", "-n", "lantern-ios"]);
 
   const dmg = findFiles(dir, (n) => n.endsWith(".dmg"))[0];
   if (dmg) copyInto(dmg, `Lantern_${version}_universal.dmg`);
@@ -170,17 +179,16 @@ const KINDS = [
 /** Installers the desktop updater can install. */
 const UPDATABLE = new Set(["nsis", "msi", "appimage", "deb", "rpm", "app"]);
 
-function publish(notes) {
-  const target = process.env.LANTERN_PUBLISH_SSH;
-  const dir = process.env.LANTERN_PUBLISH_DIR || "/srv/lantern/releases";
-  if (!target) throw new Error("Set LANTERN_PUBLISH_SSH (user@host of your hub) in .env.local.");
-  if (!existsSync(outDir)) throw new Error(`Nothing to publish: release/${version}/ doesn't exist. Run the build first.`);
-
+/**
+ * Writes `dir`/release.json, the manifest a hub serves downloads and updates from, after
+ * signing every desktop installer in `dir` with the updater key.
+ */
+function writeRelease(dir, notes) {
   const files = [];
-  for (const name of readdirSync(outDir).sort()) {
+  for (const name of readdirSync(dir).sort()) {
     const kind = KINDS.find(([re]) => re.test(name));
     if (!kind) continue;
-    const path = join(outDir, name);
+    const path = join(dir, name);
     const sig = existsSync(`${path}.sig`) ? readFileSync(`${path}.sig`, "utf8").trim() : undefined;
     files.push({
       name,
@@ -192,20 +200,29 @@ function publish(notes) {
       ...(sig ? { signature: sig } : {}),
     });
   }
-  if (!files.length) throw new Error(`No installers in release/${version}/.`);
+  if (!files.length) throw new Error(`No installers in ${dir}.`);
 
   // Sign every desktop update with its version bound into the signature, so a tampered manifest
   // can't offer an older (genuinely signed) release as an "update".
   const env = { ...process.env, ...signingEnv() };
   for (const f of files.filter((f) => UPDATABLE.has(f.kind))) {
     if (!env.TAURI_SIGNING_PRIVATE_KEY) break;
-    const path = join(outDir, f.name);
+    const path = join(dir, f.name);
     const r = spawnSync("npx", ["tauri", "signer", "sign", "--app-version", version, path], { cwd: root, env, shell: isWindows, encoding: "utf8" });
     if (r.status !== 0) throw new Error(`signing ${f.name} failed: ${r.stderr || r.stdout}`);
     f.signature = readFileSync(`${path}.sig`, "utf8").trim();
   }
   const release = { version, notes: notes ?? `Lantern ${version}`, pubDate: new Date().toISOString(), files };
-  writeFileSync(join(outDir, "release.json"), JSON.stringify(release, null, 2));
+  writeFileSync(join(dir, "release.json"), JSON.stringify(release, null, 2));
+  return release;
+}
+
+function publish(notes) {
+  const target = process.env.LANTERN_PUBLISH_SSH;
+  const dir = process.env.LANTERN_PUBLISH_DIR || "/srv/lantern/releases";
+  if (!target) throw new Error("Set LANTERN_PUBLISH_SSH (user@host of your hub) in .env.local.");
+  if (!existsSync(outDir)) throw new Error(`Nothing to publish: release/${version}/ doesn't exist. Run the build first.`);
+  const { files } = writeRelease(outDir, notes);
 
   console.log(`Publishing Lantern ${version} (${files.length} files) to ${target}:${dir}/${version}`);
   run("ssh", [target, `mkdir -p '${dir}/${version}'`], { shell: false });
@@ -213,6 +230,115 @@ function publish(notes) {
   // The hub lists a release only once its release.json exists, so upload it last.
   run("scp", ["-q", join(outDir, "release.json"), `${target}:${dir}/${version}/`], { shell: false });
   for (const f of files) console.log(`  ${f.platform.padEnd(8)} ${f.kind.padEnd(9)} ${f.name}${f.signature ? "  (auto-update)" : ""}`);
+}
+
+// ------------------------------------------------------------------ GitHub release
+
+function androidSdk() {
+  return process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || join(process.env.LOCALAPPDATA || join(homedir(), "Library"), "Android", "Sdk");
+}
+
+/** Signs a CI-built (unsigned) APK with the release keystore, so it installs and updates like the hub's builds. */
+function signApk(unsigned, dest) {
+  const propsFile = process.env.LANTERN_ANDROID_SIGNING || join(homedir(), ".lantern", "android-signing.properties");
+  if (!existsSync(propsFile)) throw new Error(`No Android signing file at ${propsFile}.`);
+  const props = Object.fromEntries(
+    readFileSync(propsFile, "utf8")
+      .split(/\r?\n/)
+      .map((l) => l.match(/^\s*([\w.]+)\s*=\s*(.*?)\s*$/))
+      .filter(Boolean)
+      .map((m) => [m[1], m[2]]),
+  );
+  const tools = join(androidSdk(), "build-tools");
+  const latest = readdirSync(tools).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop();
+  const bin = (name) => join(tools, latest, isWindows ? (name === "apksigner" ? "apksigner.bat" : "zipalign.exe") : name);
+  const aligned = `${dest}.aligned`;
+  run(bin("zipalign"), ["-p", "-f", "4", unsigned, aligned], { shell: false });
+  // The password goes through the environment, never the command line.
+  const env = { ...process.env, LANTERN_KS_PASS: props.password };
+  const ks = resolve(dirname(propsFile), props.storeFile);
+  run(`"${bin("apksigner")}"`, ["sign", "--ks", `"${ks}"`, "--ks-key-alias", props.keyAlias, "--ks-pass", "env:LANTERN_KS_PASS", "--key-pass", "env:LANTERN_KS_PASS", "--out", `"${dest}"`, `"${aligned}"`], { env, shell: true });
+  rmSync(aligned, { force: true });
+  rmSync(`${dest}.idsig`, { force: true });
+  run(`"${bin("apksigner")}"`, ["verify", `"${dest}"`], { shell: true });
+}
+
+/**
+ * Publishes a CI run's builds as a GitHub Release for anyone to download. CI builds have
+ * no hub address baked in. Update signatures and the APK signature are made here, so the
+ * keys never leave this machine, and release.json lets any hub serve the release
+ * (hub/deploy/lantern-hub-fetch-release).
+ */
+function githubRelease(runId, notes) {
+  const repo = repoSlug();
+  runId ||= latestGreenRun(repo);
+  const info = JSON.parse(spawnSync(gh(), ["run", "view", runId, "-R", repo, "--json", "headSha,conclusion"], { encoding: "utf8" }).stdout || "{}");
+  if (info.conclusion !== "success") throw new Error(`CI run ${runId} didn't succeed (${info.conclusion ?? "not found"}).`);
+  const built = JSON.parse(spawnSync("git", ["show", `${info.headSha}:package.json`], { cwd: root, encoding: "utf8" }).stdout || "{}").version;
+  if (built !== version) throw new Error(`CI run ${runId} built ${built}, not ${version}.`);
+
+  const dl = join(tmpdir(), `lantern-gh-${runId}`);
+  rmSync(dl, { recursive: true, force: true });
+  run(gh(), ["run", "download", runId, "-R", repo, "-D", dl]);
+  const out = join(outDir, "github");
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+  const put = (src, name = basename(src)) => {
+    copyFileSync(src, join(out, name));
+    console.log(`  → release/${version}/github/${name}`);
+  };
+  const one = (test, what) => {
+    const f = findFiles(dl, test)[0];
+    if (!f) throw new Error(`CI run ${runId} has no ${what}.`);
+    return f;
+  };
+  const ofVersion = (n) => n.includes(version);
+  put(one((n) => ofVersion(n) && n.endsWith("-setup.exe"), "Windows installer"));
+  put(one((n) => ofVersion(n) && n.endsWith(".msi"), "MSI"));
+  put(one((n) => ofVersion(n) && n.endsWith(".deb"), "deb"));
+  put(one((n) => ofVersion(n) && n.endsWith(".rpm"), "rpm"));
+  put(one((n) => ofVersion(n) && n.endsWith(".AppImage"), "AppImage"));
+  put(one((n) => ofVersion(n) && n.endsWith(".dmg"), "DMG"), `Lantern_${version}_universal.dmg`);
+  put(one((n) => n.endsWith(".app.tar.gz"), "macOS update archive"), `Lantern_${version}_universal.app.tar.gz`);
+  signApk(one((n) => n.endsWith(".apk") && n.includes("universal") && n.includes("release"), "release APK"), join(out, `Lantern_${version}_android-universal.apk`));
+  const iosApp = findFiles(dl, (n, isDir) => isDir && n.endsWith(".app"))[0];
+  if (iosApp) {
+    const zip = join(out, `Lantern_${version}_ios-simulator.zip`);
+    if (isWindows) run("powershell", ["-NoProfile", "-Command", `Compress-Archive -Path '${iosApp}' -DestinationPath '${zip}'`], { shell: false });
+    else run("zip", ["-qr", zip, basename(iosApp)], { cwd: resolve(iosApp, "..") });
+  }
+  const release = writeRelease(out, notes);
+
+  // The hub: binary and deploy files, one archive per CPU.
+  const hubFiles = [];
+  for (const arch of ["x86_64", "aarch64"]) {
+    const src = findFiles(dl, (n, isDir) => isDir && n === `lantern-hub-${arch}`)[0];
+    if (!src) throw new Error(`CI run ${runId} has no lantern-hub-${arch}.`);
+    const name = `lantern-hub_${version}_linux-${arch}.tar.gz`;
+    const stage = join(dl, "hub-stage", arch, `lantern-hub-${version}`);
+    mkdirSync(stage, { recursive: true });
+    for (const f of readdirSync(src)) if (f !== "CLAUDE.md") copyFileSync(join(src, f), join(stage, f));
+    // Relative paths only: GNU tar on Windows reads "C:\…" as a remote host.
+    run("tar", ["-czf", name, `lantern-hub-${version}`], { cwd: resolve(stage, ".."), shell: false });
+    renameSync(join(stage, "..", name), join(out, name));
+    hubFiles.push(name);
+    console.log(`  → release/${version}/github/${name}`);
+  }
+
+  const assets = [...release.files.flatMap((f) => [f.name, ...(f.signature ? [`${f.name}.sig`] : [])]), ...hubFiles, "release.json"];
+  const sums = assets.filter((n) => n !== "release.json").map((n) => `${createHash("sha256").update(readFileSync(join(out, n))).digest("hex")}  ${n}`);
+  writeFileSync(join(out, "SHA256SUMS"), sums.join("\n") + "\n");
+  assets.push("SHA256SUMS");
+
+  const tag = `v${version}`;
+  const body = `${notes ?? `Lantern ${version}`}\n\nInstall the app for your device below. To share one environment across your devices, run your own Lantern Hub: see [docs/HUB.md](https://github.com/${repo}/blob/main/docs/HUB.md).`;
+  const notesFile = join(dl, "notes.md");
+  writeFileSync(notesFile, body);
+  const exists = spawnSync(gh(), ["release", "view", tag, "-R", repo], { encoding: "utf8" }).status === 0;
+  const paths = assets.map((n) => join(out, n));
+  if (exists) run(gh(), ["release", "upload", tag, "-R", repo, "--clobber", ...paths]);
+  else run(gh(), ["release", "create", tag, "-R", repo, "--target", info.headSha, "--title", `Lantern ${version}`, "--notes-file", notesFile, ...paths]);
+  console.log(`GitHub release ${tag}: https://github.com/${repo}/releases/tag/${tag}`);
 }
 
 // ------------------------------------------------------------------ main
@@ -228,8 +354,12 @@ try {
   } else if (command === "publish") {
     const i = rest.indexOf("--notes");
     publish(i >= 0 ? rest[i + 1] : undefined);
+  } else if (command === "github") {
+    const i = rest.indexOf("--notes");
+    const notes = i >= 0 ? rest.splice(i, 2)[1] : undefined;
+    githubRelease(rest[0], notes);
   } else {
-    console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 16).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 17).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
     process.exit(command ? 1 : 0);
   }
 } catch (e) {

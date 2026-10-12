@@ -21,7 +21,7 @@ export let platform: PlatformInfo = {
   os: "web",
   arch: "",
   mobile: false,
-  version: "0.2.2",
+  version: "0.3.0",
   shell: null,
   secretBackend: "browser-storage",
 };
@@ -343,33 +343,34 @@ export interface GrepRequest {
 }
 
 export const fs = {
-  read(root: string, path: string, offset?: number, limit?: number) {
+  // `confine`: every path must stay inside `root` (an isolated subagent's folder).
+  read(root: string, path: string, offset?: number, limit?: number, confine?: boolean) {
     if (!isTauri) notAvailable("Reading files");
-    return invoke<ReadResult>("fs_read", { root, path, offset, limit });
+    return invoke<ReadResult>("fs_read", { root, path, offset, limit, confine });
   },
-  write(root: string, path: string, content: string) {
+  write(root: string, path: string, content: string, confine?: boolean) {
     if (!isTauri) notAvailable("Writing files");
-    return invoke<string>("fs_write", { root, path, content });
+    return invoke<string>("fs_write", { root, path, content, confine });
   },
-  edit(root: string, path: string, edits: { oldText: string; newText: string; replaceAll?: boolean }[]) {
+  edit(root: string, path: string, edits: { oldText: string; newText: string; replaceAll?: boolean }[], confine?: boolean) {
     if (!isTauri) notAvailable("Editing files");
-    return invoke<string>("fs_edit", { root, path, edits });
+    return invoke<string>("fs_edit", { root, path, edits, confine });
   },
-  list(root: string, path?: string) {
+  list(root: string, path?: string, confine?: boolean) {
     if (!isTauri) notAvailable("Listing files");
-    return invoke<DirEntry[]>("fs_list", { root, path });
+    return invoke<DirEntry[]>("fs_list", { root, path, confine });
   },
-  find(root: string, pattern: string, path?: string, limit?: number) {
+  find(root: string, pattern: string, path?: string, limit?: number, confine?: boolean) {
     if (!isTauri) notAvailable("Finding files");
-    return invoke<string[]>("fs_find", { root, pattern, path, limit });
+    return invoke<string[]>("fs_find", { root, pattern, path, limit, confine });
   },
-  grep(request: GrepRequest) {
+  grep(request: GrepRequest, confine?: boolean) {
     if (!isTauri) notAvailable("Searching files");
-    return invoke<string>("fs_grep", { request });
+    return invoke<string>("fs_grep", { request, confine });
   },
-  delete(root: string, path: string) {
+  delete(root: string, path: string, confine?: boolean) {
     if (!isTauri) notAvailable("Deleting files");
-    return invoke<string>("fs_delete", { root, path });
+    return invoke<string>("fs_delete", { root, path, confine });
   },
   async defaultWorkspace(): Promise<string> {
     if (!isTauri) return "";

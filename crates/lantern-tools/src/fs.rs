@@ -40,10 +40,26 @@ pub fn resolve(root: &str, path: &str, restricted: bool) -> Result<PathBuf, Stri
     let root = normalize(Path::new(root));
     let p = expand_home(path.trim());
     let full = normalize(&if p.is_absolute() { p } else { root.join(p) });
-    if restricted && !full.starts_with(&root) {
+    if restricted && (!full.starts_with(&root) || escapes_through_link(&root, &full)) {
         return Err(format!("{} is outside the bot workspace", full.display()));
     }
     Ok(full)
+}
+
+/// True when a symlink inside the workspace leads out of it. Checks the deepest
+/// part of `full` that exists, since the rest is about to be created.
+fn escapes_through_link(root: &Path, full: &Path) -> bool {
+    let Ok(real_root) = fs::canonicalize(root) else { return false };
+    let mut probe = full;
+    loop {
+        if let Ok(real) = fs::canonicalize(probe) {
+            return !real.starts_with(&real_root);
+        }
+        match probe.parent() {
+            Some(parent) if parent.starts_with(root) => probe = parent,
+            _ => return false,
+        }
+    }
 }
 
 fn display(root: &str, p: &Path) -> String {
@@ -356,5 +372,20 @@ mod tests {
         assert!(resolve(root, "../etc/passwd", true).is_err());
         assert!(resolve(root, "notes/a.md", true).is_ok());
         assert!(resolve(root, "../etc/passwd", false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_paths_cant_escape_through_symlinks() {
+        let base = std::env::temp_dir().join(format!("lantern-fs-link-{}", std::process::id()));
+        let ws = base.join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::create_dir_all(base.join("outside")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), ws.join("link")).unwrap();
+        let root = ws.to_string_lossy();
+        assert!(resolve(&root, "link/secret.txt", true).is_err());
+        assert!(write(&root, "link/new.txt", "x", true).is_err());
+        assert!(resolve(&root, "fresh/dir/file.txt", true).is_ok());
+        let _ = fs::remove_dir_all(base);
     }
 }

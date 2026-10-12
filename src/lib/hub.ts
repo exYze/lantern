@@ -17,6 +17,16 @@ export interface HubToolInfo {
   shell: string;
   os: string;
   user: string;
+  /** The hub can run commands in bubblewrap sandboxes (unknown on hubs before 0.3). */
+  sandbox?: boolean;
+  /** When this device last asked; refreshed now and then in case the hub was upgraded. */
+  fetchedAt?: number;
+}
+
+/** A bubblewrap sandbox on the hub: `dir` is the only writable (and visible) part of the workspace. */
+export interface HubSandbox {
+  dir: string;
+  network: boolean;
 }
 
 export interface HubConnection {
@@ -195,35 +205,43 @@ async function hubTool<T>(request: Record<string, unknown>, timeoutMs = 120_000)
   }
 }
 
+const TOOL_INFO_MAX_AGE = 30 * 60_000;
+
 export async function hubToolInfo(): Promise<HubToolInfo> {
-  const conn = hubConnection();
-  if (conn?.tools) return conn.tools;
-  const tools = await hubTool<HubToolInfo>({ op: "info" }, 15000);
-  const latest = hubConnection();
-  if (latest) await saveHubConnection({ ...latest, tools });
-  return tools;
+  const cached = hubConnection()?.tools;
+  if (cached && cached.sandbox !== undefined && Date.now() - (cached.fetchedAt ?? 0) < TOOL_INFO_MAX_AGE) return cached;
+  try {
+    const tools = { ...(await hubTool<HubToolInfo>({ op: "info" }, 15000)), fetchedAt: Date.now() };
+    const latest = hubConnection();
+    if (latest) await saveHubConnection({ ...latest, tools });
+    return tools;
+  } catch (e) {
+    if (cached) return cached;
+    throw e;
+  }
 }
 
 export const hubFs = {
-  read: (root: string, path: string, offset?: number, limit?: number) => hubTool<ReadResult>({ op: "fs_read", root, path, offset, limit }),
-  write: (root: string, path: string, content: string) => hubTool<string>({ op: "fs_write", root, path, content }),
-  edit: (root: string, path: string, edits: { oldText: string; newText: string; replaceAll?: boolean }[]) => hubTool<string>({ op: "fs_edit", root, path, edits }),
-  list: (root: string, path?: string) => hubTool<DirEntry[]>({ op: "fs_list", root, path }),
-  find: (root: string, pattern: string, path?: string, limit?: number) => hubTool<string[]>({ op: "fs_find", root, pattern, path, limit }),
-  grep: (request: GrepRequest) => hubTool<string>({ op: "fs_grep", request }),
-  delete: (root: string, path: string) => hubTool<string>({ op: "fs_delete", root, path }),
+  read: (root: string, path: string, offset?: number, limit?: number, confine?: boolean) => hubTool<ReadResult>({ op: "fs_read", root, path, offset, limit, confine }),
+  write: (root: string, path: string, content: string, confine?: boolean) => hubTool<string>({ op: "fs_write", root, path, content, confine }),
+  edit: (root: string, path: string, edits: { oldText: string; newText: string; replaceAll?: boolean }[], confine?: boolean) =>
+    hubTool<string>({ op: "fs_edit", root, path, edits, confine }),
+  list: (root: string, path?: string, confine?: boolean) => hubTool<DirEntry[]>({ op: "fs_list", root, path, confine }),
+  find: (root: string, pattern: string, path?: string, limit?: number, confine?: boolean) => hubTool<string[]>({ op: "fs_find", root, pattern, path, limit, confine }),
+  grep: (request: GrepRequest, confine?: boolean) => hubTool<string>({ op: "fs_grep", request, confine }),
+  delete: (root: string, path: string, confine?: boolean) => hubTool<string>({ op: "fs_delete", root, path, confine }),
 };
 
 export async function hubShellRun(
   command: string,
-  opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal },
+  opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal; sandbox?: HubSandbox },
 ): Promise<ShellResult> {
   const id = uid("sh");
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const onAbort = () => void hubTool({ op: "shell_cancel", id }, 15000).catch(() => {});
   opts.signal?.addEventListener("abort", onAbort);
   try {
-    return await hubTool<ShellResult>({ op: "shell_run", request: { id, command, cwd: opts.cwd, timeoutMs, env: opts.env ?? {} } }, timeoutMs + 30_000);
+    return await hubTool<ShellResult>({ op: "shell_run", request: { id, command, cwd: opts.cwd, timeoutMs, env: opts.env ?? {}, sandbox: opts.sandbox } }, timeoutMs + 30_000);
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
   }

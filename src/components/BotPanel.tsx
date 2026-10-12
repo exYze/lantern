@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import { usesHub } from "../lib/hub";
 import { capabilities, pickFolder, platform, secrets } from "../lib/platform";
 import { runRoutine } from "../lib/routines";
+import { toolEnabled } from "../lib/tools";
 import { describeSchedule } from "../lib/schedule";
 import { addMemory, botSecretKey, deleteBot, deleteMemory, deleteRoutine, deleteSkill, saveBot, saveRoutine, saveSkill, setView, useApp, workspaceFor } from "../lib/store";
 import type { ApprovalMode, Bot, BotToolToggles, Skill } from "../lib/types";
@@ -24,6 +25,7 @@ const TOOL_INFO: { key: keyof BotToolToggles; label: string; description: string
   { key: "skills", label: "Skills", description: "Load and create skills (reusable instructions)." },
   { key: "routines", label: "Routines", description: "Schedule recurring tasks for itself." },
   { key: "conversationSearch", label: "Chat history", description: "Search earlier chats with you." },
+  { key: "subagents", label: "Subagents", description: "Hand tasks to helpers that work on their own and report back, several at once." },
 ];
 
 export function BotPanel() {
@@ -192,6 +194,29 @@ function ModelTab({ bot }: { bot: Bot }) {
           </select>
         </Field>
       )}
+      {hub && (bot.computer ?? settings.computer ?? "hub") === "hub" && (
+        <>
+          <Toggle
+            label="Sandbox"
+            description={
+              <>
+                Keep this bot's files and commands in its own folder on the hub (<code>bots/{bot.id}</code>), walled off from your other files and the rest of the server.
+                {hub.tools?.sandbox === false && " This hub can't sandbox commands yet (it needs bubblewrap), so the bot gets no terminal until it can."}
+              </>
+            }
+            checked={!!bot.sandbox}
+            onChange={(on) => void saveBot({ ...bot, sandbox: on ? { network: true } : undefined })}
+          />
+          {bot.sandbox && (
+            <Toggle
+              label="Internet access in the sandbox"
+              description="Off: commands in the sandbox get no network at all."
+              checked={bot.sandbox.network}
+              onChange={(network) => void saveBot({ ...bot, sandbox: { network } })}
+            />
+          )}
+        </>
+      )}
       {capabilities.files && !onHub && (
         <Field label="Workspace folder" hint="Relative file paths and terminal commands start here.">
           <div className="row">
@@ -226,7 +251,7 @@ function ToolsTab({ bot }: { bot: Bot }) {
             key={t.key}
             label={t.label}
             description={unsupported ? `${t.description} (not available on this device)` : t.description}
-            checked={bot.tools[t.key] && !unsupported}
+            checked={toolEnabled(bot, t.key) && !unsupported}
             disabled={unsupported}
             onChange={(v) => void saveBot({ ...bot, tools: { ...bot.tools, [t.key]: v } })}
           />

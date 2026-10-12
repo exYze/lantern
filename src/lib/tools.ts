@@ -2,7 +2,7 @@
 // a risk class for the approval engine, and a short human summary for the UI.
 
 import type { Risk } from "./approval";
-import { hubFs, hubShellRun, usesHub } from "./hub";
+import { hubFs, hubShellRun, usesHub, type HubSandbox } from "./hub";
 import { capabilities, db, fs, platform, shellRun, webFetch } from "./platform";
 import { describeSchedule, nextRun, parseSchedule } from "./schedule";
 import { webSearch } from "./search";
@@ -14,7 +14,7 @@ import {
   saveSkill,
   useApp,
 } from "./store";
-import type { Bot, BotToolToggles, Routine } from "./types";
+import { DEFAULT_TOOLS, type Bot, type BotToolToggles, type Routine, type ToolCall } from "./types";
 import { uid } from "./util";
 
 export interface ToolContext {
@@ -25,6 +25,14 @@ export interface ToolContext {
   signal: AbortSignal;
   /** File and terminal tools run on the Lantern Hub instead of this device. */
   remote: boolean;
+  /** File tools must stay inside `workspace` (a sandboxed bot's or an isolated subagent's folder). */
+  confine?: boolean;
+  /** Terminal commands run in this sandbox on the hub. */
+  sandbox?: HubSandbox;
+  /** Every tool this run offers the model (subagents pick theirs from it). */
+  tools?: ToolDef[];
+  /** Reports progress of a long-running call (subagents) to its card in the chat. */
+  onProgress?: (patch: Partial<ToolCall>, persist?: boolean) => void;
 }
 
 /** The file system the bot's tools use: the hub's shared workspace or this device. */
@@ -73,7 +81,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     ),
     summarize: (a) => `Read ${a.path}`,
     async run(a, ctx) {
-      const r = await files(ctx).read(ctx.workspace, str(a.path, "path"), num(a.offset), num(a.limit));
+      const r = await files(ctx).read(ctx.workspace, str(a.path, "path"), num(a.offset), num(a.limit), ctx.confine);
       const width = String(r.startLine + r.content.split("\n").length).length;
       const body = r.content
         ? r.content
@@ -92,7 +100,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     description: "Create or overwrite a file with the given content. Parent folders are created as needed.",
     parameters: obj({ path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
     summarize: (a) => `Write ${a.path}`,
-    run: (a, ctx) => files(ctx).write(ctx.workspace, str(a.path, "path"), typeof a.content === "string" ? a.content : ""),
+    run: (a, ctx) => files(ctx).write(ctx.workspace, str(a.path, "path"), typeof a.content === "string" ? a.content : "", ctx.confine),
   },
   {
     name: "edit_file",
@@ -126,6 +134,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
         ctx.workspace,
         str(a.path, "path"),
         edits.map((e: any) => ({ oldText: String(e.old_text ?? e.oldText ?? ""), newText: String(e.new_text ?? e.newText ?? ""), replaceAll: !!(e.replace_all ?? e.replaceAll) })),
+        ctx.confine,
       );
     },
   },
@@ -138,7 +147,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     parameters: obj({ path: { type: "string" } }),
     summarize: (a) => `List ${a.path || "workspace"}`,
     async run(a, ctx) {
-      const entries = await files(ctx).list(ctx.workspace, opt(a.path));
+      const entries = await files(ctx).list(ctx.workspace, opt(a.path), ctx.confine);
       if (!entries.length) return "(empty folder)";
       return entries.map((e) => (e.isDir ? `${e.name}/` : `${e.name}  (${e.size} bytes)`)).join("\n");
     },
@@ -152,7 +161,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     parameters: obj({ pattern: { type: "string" }, path: { type: "string", description: "Folder to search (default workspace)" } }, ["pattern"]),
     summarize: (a) => `Find ${a.pattern}`,
     async run(a, ctx) {
-      const found = await files(ctx).find(ctx.workspace, str(a.pattern, "pattern"), opt(a.path), 200);
+      const found = await files(ctx).find(ctx.workspace, str(a.pattern, "pattern"), opt(a.path), 200, ctx.confine);
       return found.length ? found.join("\n") : "No files found.";
     },
   },
@@ -184,7 +193,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
         literal: !!a.literal,
         context: num(a.context),
         limit: 100,
-      }),
+      }, ctx.confine),
   },
   {
     name: "delete_file",
@@ -194,7 +203,7 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     description: "Delete a file or folder (folders are deleted recursively).",
     parameters: obj({ path: { type: "string" } }, ["path"]),
     summarize: (a) => `Delete ${a.path}`,
-    run: (a, ctx) => files(ctx).delete(ctx.workspace, str(a.path, "path")),
+    run: (a, ctx) => files(ctx).delete(ctx.workspace, str(a.path, "path"), ctx.confine),
   },
   {
     name: "shell",
@@ -212,11 +221,14 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     ),
     summarize: (a) => String(a.command ?? ""),
     async run(a, ctx) {
+      // Sandboxes exist only on the hub; never fall back to running unsandboxed here.
+      if (ctx.sandbox && !ctx.remote) throw new Error("This bot's commands must run in its sandbox on the hub.");
       const r = await (ctx.remote ? hubShellRun : shellRun)(str(a.command, "command"), {
         cwd: ctx.workspace,
         timeoutMs: (num(a.timeout_seconds) ?? 120) * 1000,
         env: ctx.env,
         signal: ctx.signal,
+        sandbox: ctx.sandbox,
       });
       const parts = [];
       const norm = (t: string) => t.replace(/\r\n?/g, "\n").trimEnd();
@@ -412,8 +424,13 @@ export function skillsForBot(bot: Bot) {
   return all.filter((s) => s.botId === bot.id || (!s.botId && bot.skillIds.includes(s.id)));
 }
 
+/** Whether a bot has a tool group turned on; groups added after the bot was made use their default. */
+export function toolEnabled(bot: Bot, group: keyof BotToolToggles): boolean {
+  return bot.tools[group] ?? DEFAULT_TOOLS[group] ?? false;
+}
+
 export function builtinToolsFor(bot: Bot): ToolDef[] {
-  return BUILTIN_TOOLS.filter((t) => (t.available ? t.available(bot) : true) && t.group !== "mcp" && bot.tools[t.group as keyof BotToolToggles]);
+  return BUILTIN_TOOLS.filter((t) => (t.available ? t.available(bot) : true) && t.group !== "mcp" && toolEnabled(bot, t.group as keyof BotToolToggles));
 }
 
 export function riskOf(tool: ToolDef, args: Record<string, unknown>): Risk {

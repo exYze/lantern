@@ -1,4 +1,5 @@
 import {
+  Bot as BotIcon,
   Brain,
   Check,
   ChevronDown,
@@ -22,8 +23,9 @@ import { memo, useState, type ReactNode } from "react";
 import { editAndResend, regenerate } from "../lib/agent";
 import { rulePatternForCommand } from "../lib/approval";
 import { answerApproval, isAwaitingApproval, useApp } from "../lib/store";
+import { DELEGATE_TOOL } from "../lib/subagents";
 import { BUILTIN_TOOLS } from "../lib/tools";
-import type { Bot, ChatMessage, ToolCall } from "../lib/types";
+import type { Bot, ChatMessage, SubagentRun, ToolCall } from "../lib/types";
 import { Avatar } from "./Avatar";
 import { CopyButton, Markdown } from "./Markdown";
 import { Button, IconButton } from "./ui";
@@ -39,6 +41,7 @@ function parseArgs(json: string): Record<string, unknown> {
 
 export function describeToolCall(call: ToolCall): { title: string; icon: ReactNode } {
   const args = parseArgs(call.arguments);
+  if (call.name === DELEGATE_TOOL.name) return { title: call.subagent?.title ? `Subagent: ${call.subagent.title}` : DELEGATE_TOOL.summarize(args), icon: <BotIcon size={15} /> };
   const builtin = BUILTIN_TOOLS.find((t) => t.name === call.name);
   const iconFor: Record<string, ReactNode> = {
     files: <FileText size={15} />,
@@ -141,10 +144,12 @@ function ToolCallCard({ call, botName }: { call: ToolCall; botName: string }) {
         </div>
       )}
 
+      {call.subagent && <SubagentPanel run={call.subagent} active={call.status === "running"} botName={botName} />}
+
       {open && (
         <div className="toolcard-body">
-          <div className="toolcard-label">Arguments</div>
-          <pre>{isShell ? String(args.command ?? "") : JSON.stringify(args, null, 2)}</pre>
+          <div className="toolcard-label">{call.subagent ? "Task" : "Arguments"}</div>
+          <pre>{isShell ? String(args.command ?? "") : call.subagent ? String(args.task ?? "") : JSON.stringify(args, null, 2)}</pre>
           {call.result !== undefined && (
             <>
               <div className="toolcard-label">
@@ -157,6 +162,41 @@ function ToolCallCard({ call, botName }: { call: ToolCall; botName: string }) {
         </div>
       )}
       {call.approval && call.status !== "awaiting-approval" && call.approval !== "read-only" && <div className="toolcard-note">{APPROVAL_NOTE[call.approval]}</div>}
+    </div>
+  );
+}
+
+/** A subagent's work inside its delegate_task card: live while it runs, folded away after. */
+function SubagentPanel({ run, active, botName }: { run: SubagentRun; active: boolean; botName: string }) {
+  const [open, setOpen] = useState(false);
+  const needsYou = run.steps.some((s) => s.toolCalls?.some((c) => c.status === "awaiting-approval" && isAwaitingApproval(c.id)));
+  const actions = run.steps.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0);
+  const expanded = active || needsYou || open;
+  return (
+    <div className="subagent">
+      <div className="subagent-meta">
+        <span className="pill">{run.isolated ? "Own folder" : "Shared workspace"}</span>
+        {run.sandboxed && <span className="pill pill-accent">{run.network ? "Sandboxed" : "Sandboxed · no internet"}</span>}
+        <span className="subagent-model">{run.model}</span>
+        {!active && !needsYou && (
+          <button className="subagent-toggle" onClick={() => setOpen(!open)}>
+            {open ? "Hide steps" : `${run.steps.length} step${run.steps.length === 1 ? "" : "s"} · ${actions} action${actions === 1 ? "" : "s"}`}
+            {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="subagent-steps">
+          {run.steps.map((step) => (
+            <div key={step.id} className="subagent-step">
+              {step.content.trim() && <div className="subagent-text">{step.content.length > 1200 ? `${step.content.slice(0, 1200)}…` : step.content}</div>}
+              {step.status === "streaming" && !step.content && <div className="subagent-text muted">Thinking…</div>}
+              {step.status === "error" && <div className="subagent-text bad">This step failed.</div>}
+              {step.toolCalls?.map((c) => <ToolCallCard key={c.id} call={c} botName={`${botName}'s subagent`} />)}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

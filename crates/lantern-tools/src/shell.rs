@@ -24,6 +24,66 @@ pub struct ShellRequest {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Run the command walled off in `sandbox.dir` (Linux with bubblewrap).
+    #[serde(default)]
+    pub sandbox: Option<Sandbox>,
+}
+
+/// A bubblewrap sandbox: the system is read-only, other users' and bots' files
+/// are hidden, and only `dir` (plus a private /tmp) can be written.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Sandbox {
+    pub dir: String,
+    /// Commands may use the network (otherwise they get none at all).
+    #[serde(default)]
+    pub network: bool,
+}
+
+/// bubblewrap arguments for running `command` inside `sb`.
+pub fn sandbox_args(command: &str, sb: &Sandbox) -> Vec<String> {
+    let dir = sb.dir.as_str();
+    let mut args: Vec<&str> = vec!["--die-with-parent", "--new-session", "--unshare-all"];
+    if sb.network {
+        args.push("--share-net");
+    }
+    args.extend([
+        "--ro-bind", "/", "/",
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--tmpfs", "/tmp",
+        "--tmpfs", "/var/tmp",
+        // Hides every home folder (other bots, the admin), the hub's and the
+        // tool runner's sockets, and the Tailscale socket.
+        "--tmpfs", "/home",
+        "--tmpfs", "/root",
+        "--tmpfs", "/run",
+        // DNS: /etc/resolv.conf points into /run on systemd-resolved systems.
+        "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
+        "--tmpfs", "/srv",
+        "--tmpfs", "/mnt",
+        "--tmpfs", "/media",
+        "--bind", dir, dir,
+        "--chdir", dir,
+        "--setenv", "HOME", dir,
+        "--setenv", "TMPDIR", "/tmp",
+        "--", "/bin/bash", "-l", "-c", command,
+    ]);
+    args.into_iter().map(str::to_string).collect()
+}
+
+/// True when bubblewrap is installed and can create a sandbox here.
+pub async fn sandbox_available() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let probe = Command::new("bwrap")
+        .args(["--die-with-parent", "--unshare-all", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    matches!(tokio::time::timeout(Duration::from_secs(10), probe).await, Ok(Ok(s)) if s.success())
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -66,6 +126,21 @@ pub fn shell_command(command: &str) -> Command {
         cmd.process_group(0);
         cmd
     }
+}
+
+fn sandboxed_command(command: &str, sb: &Sandbox) -> Result<Command, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("sandboxes need a Linux machine with bubblewrap".into());
+    }
+    if !std::path::Path::new(&sb.dir).is_absolute() {
+        return Err(format!("sandbox folder must be an absolute path: {}", sb.dir));
+    }
+    std::fs::create_dir_all(&sb.dir).map_err(|e| format!("{}: {e}", sb.dir))?;
+    let mut cmd = Command::new("bwrap");
+    cmd.args(sandbox_args(command, sb));
+    #[cfg(unix)]
+    cmd.process_group(0);
+    Ok(cmd)
 }
 
 pub async fn kill_tree(child: &mut tokio::process::Child) {
@@ -129,8 +204,11 @@ impl ShellRunner {
 
     pub async fn run(&self, req: ShellRequest) -> Result<ShellResult, String> {
         let started = Instant::now();
-        let mut cmd = shell_command(&req.command);
-        if let Some(cwd) = req.cwd.as_deref().filter(|c| !c.is_empty()) {
+        let mut cmd = match &req.sandbox {
+            Some(sb) => sandboxed_command(&req.command, sb)?,
+            None => shell_command(&req.command),
+        };
+        if let Some(cwd) = req.cwd.as_deref().filter(|c| !c.is_empty() && req.sandbox.is_none()) {
             std::fs::create_dir_all(cwd).map_err(|e| format!("{cwd}: {e}"))?;
             cmd.current_dir(cwd);
         }
@@ -170,5 +248,42 @@ impl ShellRunner {
         result.stderr = tokio::time::timeout(grace, err).await.ok().and_then(|r| r.ok()).unwrap_or_default();
         result.duration_ms = started.elapsed().as_millis() as u64;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_shares_the_network_only_when_asked() {
+        let sb = |network| Sandbox { dir: "/w/bots/b1".into(), network };
+        let closed = sandbox_args("ls", &sb(false));
+        assert!(!closed.contains(&"--share-net".to_string()));
+        assert!(closed.contains(&"--unshare-all".to_string()));
+        assert!(sandbox_args("ls", &sb(true)).contains(&"--share-net".to_string()));
+    }
+
+    #[test]
+    fn sandbox_hides_homes_before_binding_its_folder() {
+        let args = sandbox_args("echo hi", &Sandbox { dir: "/home/agent/ws/b1".into(), network: false });
+        let pos = |flag: &str, value: &str| args.windows(2).position(|w| w[0] == flag && w[1] == value).unwrap();
+        assert!(pos("--tmpfs", "/home") < pos("--bind", "/home/agent/ws/b1"));
+        assert!(pos("--tmpfs", "/run") < pos("--bind", "/home/agent/ws/b1"));
+        assert_eq!(args.last().unwrap(), "echo hi");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn sandboxes_are_refused_off_linux() {
+        let req = ShellRequest {
+            id: "s1".into(),
+            command: "echo hi".into(),
+            cwd: None,
+            timeout_ms: None,
+            env: HashMap::new(),
+            sandbox: Some(Sandbox { dir: "/tmp/x".into(), network: false }),
+        };
+        assert!(ShellRunner::default().run(req).await.is_err());
     }
 }

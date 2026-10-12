@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Installs or upgrades Lantern Hub on a Linux server with systemd.
-#   sudo ./install.sh /path/to/lantern-hub [release-publisher-user]
+#   sudo bash install.sh /path/to/lantern-hub [release-publisher-user]
 # With Tailscale installed and logged in, the hub is published to your tailnet
 # over HTTPS (tailscale serve) and devices signed in to your Tailscale account
-# can pair without a code.
+# can pair without a code. bubblewrap is installed for bot sandboxes.
 set -euo pipefail
 
-BIN=${1:?usage: sudo ./install.sh /path/to/lantern-hub [publisher-user]}
+BIN=${1:?usage: sudo bash install.sh /path/to/lantern-hub [publisher-user]}
 PUBLISHER=${2:-${SUDO_USER:-root}}
 HERE=$(cd "$(dirname "$0")" && pwd)
 [[ $EUID -eq 0 ]] || { echo "Run as root (sudo)." >&2; exit 1; }
@@ -18,6 +18,22 @@ cat > /usr/local/bin/lantern-hubctl <<'EOF'
 exec sudo -u lantern-hub sh -c 'set -a; . /etc/lantern-hub.env; set +a; exec /usr/local/bin/lantern-hub "$@"' lantern-hubctl "$@"
 EOF
 chmod 0755 /usr/local/bin/lantern-hubctl
+install -m 0755 "$HERE/lantern-hub-fetch-release" /usr/local/bin/lantern-hub-fetch-release
+
+# Sandboxes for bots and subagents. Ubuntu 23.10+ restricts the user namespaces
+# bubblewrap needs, so it gets an AppArmor profile that allows them.
+if ! command -v bwrap >/dev/null; then
+  if command -v apt-get >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bubblewrap >/dev/null
+  elif command -v dnf >/dev/null; then
+    dnf install -y -q bubblewrap
+  fi
+fi
+if command -v bwrap >/dev/null && command -v apparmor_parser >/dev/null && [[ $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null) == 1 ]]; then
+  install -m 0644 "$HERE/lantern-bwrap.apparmor" /etc/apparmor.d/lantern-bwrap
+  apparmor_parser -r /etc/apparmor.d/lantern-bwrap
+fi
+command -v bwrap >/dev/null || echo "Note: bubblewrap isn't installed, so bots can't be sandboxed (install it and rerun)."
 
 id -u lantern-agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash lantern-agent
 id -u lantern-hub >/dev/null 2>&1 || useradd --system --home-dir /var/lib/lantern-hub --shell /usr/sbin/nologin lantern-hub
@@ -48,6 +64,30 @@ if command -v tailscale >/dev/null && tailscale ip >/dev/null 2>&1; then
 fi
 
 install -m 0644 "$HERE/lantern-hub.service" "$HERE/lantern-agent.service" /etc/systemd/system/
+# Optional: add official releases from GitHub daily (systemctl enable --now lantern-fetch-release.timer).
+cat > /etc/systemd/system/lantern-fetch-release.service <<UNIT
+[Unit]
+Description=Add the latest Lantern release from GitHub to Lantern Hub
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=$PUBLISHER
+Environment=LANTERN_HUB_RELEASES=/srv/lantern/releases
+ExecStart=/usr/local/bin/lantern-hub-fetch-release
+UNIT
+cat > /etc/systemd/system/lantern-fetch-release.timer <<'UNIT'
+[Unit]
+Description=Check GitHub for new Lantern releases daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
 systemctl daemon-reload
 systemctl enable lantern-agent lantern-hub >/dev/null
 systemctl restart lantern-agent lantern-hub

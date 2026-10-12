@@ -1,6 +1,6 @@
 [package]
 name = "lantern-hub"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lantern Hub — one shared Lantern environment for all your devices"
 authors = ["Lantern contributors"]
 license = "MIT"

@@ -1,0 +1,10 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Lantern Hub sandboxes bots' commands with bubblewrap, which needs a user namespace.
+# Ubuntu 23.10+ only allows those to programs with a profile like this one.
+profile lantern-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/lantern-bwrap>
+}

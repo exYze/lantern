@@ -6,7 +6,7 @@ import { ModelPicker } from "../components/ModelPicker";
 import { ProviderForm } from "../components/ProviderForm";
 import { Button, confirmDialog, Field, IconButton, Modal, Pill, Toggle } from "../components/ui";
 import { listModels } from "../lib/llm";
-import { hubDevices, type HubDevice } from "../lib/hub";
+import { hubDevices, hubToolInfo, type HubDevice } from "../lib/hub";
 import { capabilities, fs, isTauri, openExternal, pickFolder, platform } from "../lib/platform";
 import { addApprovalRule, deleteProvider, exportData, importData, saveProvider, toast, updateSettings, useApp, type View } from "../lib/store";
 import { disconnectHub, syncNow, type SyncState } from "../lib/sync";
@@ -202,6 +202,8 @@ function HubConnected({ sync }: { sync: SyncState }) {
       .catch(() => setDevices(null));
   useEffect(() => {
     void loadDevices();
+    // Also refreshes what the hub can do (e.g. sandboxes after a hub upgrade).
+    void hubToolInfo().catch(() => {});
   }, []);
 
   return (
@@ -251,6 +253,13 @@ function HubConnected({ sync }: { sync: SyncState }) {
           <option value="device">On each device</option>
         </select>
       </Field>
+      {hub.tools?.sandbox !== undefined && (
+        <p className="muted small">
+          {hub.tools.sandbox
+            ? "Sandboxes: available. A bot can keep its files and commands in a sandbox (its Model tab), and isolated subagents run in one."
+            : "Sandboxes: not set up on this hub. Install bubblewrap there to sandbox bots and subagents (docs/HUB.md, Sandboxes)."}
+        </p>
+      )}
 
       <h3>Devices</h3>
       {devices ? (
