@@ -9,7 +9,9 @@ const root = createRoot(document.getElementById("root")!);
 
 async function boot() {
   try {
-    await initPlatform();
+    const info = await initPlatform();
+    // Lets CSS adapt to platform quirks (e.g. Android's edge-to-edge system bars).
+    document.documentElement.dataset.os = info.os;
     root.render(
       <StrictMode>
         <App />

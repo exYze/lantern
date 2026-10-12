@@ -28,7 +28,7 @@ export function Onboarding() {
             <ul className="welcome-points">
               <li>Works with Ollama, llama.cpp, vLLM, LM Studio and any OpenAI-compatible server</li>
               <li>Your data stays on your device. No account, no telemetry</li>
-              <li>You approve what bots do on your computer</li>
+              <li>Bots ask before they change things or run commands</li>
             </ul>
             <Button variant="primary" onClick={() => setStep(hasProvider ? "bot" : "server")}>
               Get started <ArrowRight size={16} />

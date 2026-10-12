@@ -2243,3 +2243,15 @@ input[type="range"] {
   width: auto;
   flex: 1 1 160px;
 }
+
+/* Android draws the WebView edge-to-edge but doesn't report the gesture-bar inset. */
+:root[data-os="android"] .composer-wrap,
+:root[data-os="android"] .details-body,
+:root[data-os="android"] .page-body,
+:root[data-os="android"] .settings-body {
+  padding-bottom: max(32px, env(safe-area-inset-bottom));
+}
+
+:root[data-os="android"] .modal {
+  padding-bottom: max(24px, env(safe-area-inset-bottom));
+}
