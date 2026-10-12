@@ -67,6 +67,7 @@ export function App() {
   const onboarded = useApp((s) => s.settings.onboarded);
   const detailsOpen = useApp((s) => s.detailsOpen && s.view.kind === "chat" && !!s.activeBotId);
   const navOpen = useApp((s) => s.navOpen);
+  const banner = useApp((s) => !!s.update && !s.update.dismissed);
   useTheme(theme);
 
   useEffect(() => {
@@ -87,13 +88,15 @@ export function App() {
   return (
     <>
       {onboarded ? (
-        <div className={`app${navOpen ? " nav-open" : ""}${detailsOpen ? " details-open" : ""}`}>
-          <Sidebar />
-          <main className="main">
-            <UpdateBanner />
-            <Main />
-          </main>
-          {detailsOpen && <BotPanel />}
+        <div className={`app-shell${banner ? " has-banner" : ""}`}>
+          <UpdateBanner />
+          <div className={`app${navOpen ? " nav-open" : ""}${detailsOpen ? " details-open" : ""}`}>
+            <Sidebar />
+            <main className="main">
+              <Main />
+            </main>
+            {detailsOpen && <BotPanel />}
+          </div>
         </div>
       ) : (
         <Onboarding />

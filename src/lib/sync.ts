@@ -87,6 +87,8 @@ let pushing = false;
 let pulling = false;
 let pullAgain = false;
 let started = false;
+/** Bumped whenever sync stops, so work started for an old connection doesn't touch the new state. */
+let generation = 0;
 
 const keyOf = (c: string, id: string) => `${c}${SEP}${id}`;
 
@@ -100,7 +102,7 @@ function enqueue(c: string, id: string) {
   void db.put(OUTBOX, k, { c, id }, true);
   setSync({});
   if (pushTimer) clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => void push(), 400);
+  pushTimer = setTimeout(() => void push().catch(handleError), 400);
 }
 
 function onDocChange(collection: string, id: string) {
@@ -140,6 +142,7 @@ export async function startSync(): Promise<void> {
 
 /** Stops syncing (e.g. after disconnecting). Local data is kept. */
 export function stopSync() {
+  generation++;
   changeListeners.doc = null;
   changeListeners.secret = null;
   stream?.abort();
@@ -164,13 +167,14 @@ export async function syncNow(): Promise<void> {
   try {
     await pull();
     await push();
-    setSync({ status: "online", error: undefined, lastSyncAt: Date.now() });
+    if (conn) setSync({ status: "online", error: undefined, lastSyncAt: Date.now() });
   } catch (e) {
     handleError(e);
   }
 }
 
 function handleError(e: unknown) {
+  if (!conn) return;
   if (e instanceof HubError && e.status === 401) {
     // This device was removed from the hub, or its key is gone: stop and say so.
     stopSync();
@@ -187,7 +191,8 @@ function pullSoon(delay = 250) {
 }
 
 async function saveConn() {
-  if (conn) await saveHubConnection(conn);
+  // Keep fields other modules cache on the connection (e.g. the hub's tool info).
+  if (conn) await saveHubConnection({ ...useApp.getState().hub, ...conn });
 }
 
 async function pull(): Promise<void> {
@@ -196,6 +201,7 @@ async function pull(): Promise<void> {
     return;
   }
   pulling = true;
+  const gen = generation;
   try {
     do {
       pullAgain = false;
@@ -206,6 +212,7 @@ async function pull(): Promise<void> {
           `/api/v1/changes?since=${conn.cursor}&limit=500`,
           { timeoutMs: 60000 },
         );
+        if (gen !== generation || !conn) return;
         if (page.hubId !== conn.hubId) {
           // The hub was reset or replaced: merge everything again.
           conn = { ...conn, hubId: page.hubId, cursor: 0, merged: false };
@@ -215,6 +222,7 @@ async function pull(): Promise<void> {
         }
         if (!conn.merged) for (const ch of page.changes) remoteKeys.add(keyOf(ch.c, ch.id));
         await applyRemote(page.changes);
+        if (gen !== generation || !conn) return;
         conn = { ...conn, cursor: page.cursor };
         if (!page.more) break;
         await saveConn();
@@ -282,8 +290,9 @@ async function readLocal(c: string, id: string): Promise<Change> {
 async function push(): Promise<void> {
   if (pushing || !conn) return;
   pushing = true;
+  const gen = generation;
   try {
-    while (conn && outbox.size) {
+    while (conn && gen === generation && outbox.size) {
       const batch: Change[] = [];
       const sent = new Map<string, number>();
       let bytes = 0;
@@ -296,6 +305,7 @@ async function push(): Promise<void> {
         bytes += size;
       }
       await hubApi("/api/v1/push", { body: { changes: batch }, timeoutMs: 120000 });
+      if (gen !== generation) return;
       for (const [k, v] of sent) {
         // Changed again while we were sending? Keep it queued for the next round.
         if (outbox.get(k)?.v === v) {
@@ -305,8 +315,6 @@ async function push(): Promise<void> {
       }
       setSync({ lastSyncAt: Date.now() });
     }
-  } catch (e) {
-    handleError(e);
   } finally {
     pushing = false;
   }

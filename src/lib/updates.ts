@@ -3,7 +3,7 @@
 // Android is offered the new APK to download and install.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { hubConnection } from "./hub";
+import { DEFAULT_HUB_URL, hubConnection } from "./hub";
 import { httpRequest, isTauri, openExternal, platform } from "./platform";
 import { toast, useApp } from "./store";
 
@@ -32,14 +32,15 @@ export function startUpdateChecks() {
 type Outcome = "none" | "available" | "unavailable" | "error";
 
 export async function checkForUpdates(opts: { startup?: boolean; manual?: boolean } = {}): Promise<Outcome> {
-  const hub = hubConnection();
-  if (!isTauri || !hub) {
+  // The manifest is public, so an app built with a hub address gets updates even before it pairs.
+  const base = hubConnection()?.url ?? DEFAULT_HUB_URL;
+  if (!isTauri || !base) {
     if (opts.manual) toast("Updates come from your Lantern Hub. Connect one in Settings → Hub.");
     return "unavailable";
   }
   if (checking) return "none";
   checking = true;
-  const endpoint = `${hub.url}/updates/latest.json`;
+  const endpoint = `${base}/updates/latest.json`;
   try {
     if (platform.mobile) {
       if (platform.os !== "android") return "unavailable";

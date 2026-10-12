@@ -87,7 +87,8 @@ Builds made with a `.env.local` that sets `VITE_LANTERN_HUB_URL` have your hub's
 
 ## Releases and auto-updates
 
-Desktop apps check `<hub>/updates/latest.json` at startup and every six hours. Updates are signed: the
+Desktop apps check `<hub>/updates/latest.json` at startup and every six hours (apps built with a hub
+address check it even before they're paired). Updates are signed: the
 app only installs an installer whose signature matches the public key built into it
 (`plugins.updater.pubkey` in `src-tauri/tauri.conf.json`). By default they install at startup or while the
 app is in the background, never in the middle of a bot's work (**Settings → About**). Android shows a
@@ -120,7 +121,10 @@ and keeps its keys outside the repository:
 - `~/.lantern/android-signing.properties`, which points at your Android release keystore (`storeFile`,
   `password`, `keyAlias`). Android only installs updates signed with the same key.
 
-The signing key never goes to CI: the macOS update archive built there is signed by `release.mjs fetch-ci`.
+`publish` signs every desktop installer with its version bound into the signature, and the apps
+(`requireSignedVersion`) reject an update whose signed version doesn't match the manifest, so nobody can
+pass off an older release as a new one. The signing key never goes to CI: the macOS archive built there is
+signed by `publish` too.
 
 ## Troubleshooting
 

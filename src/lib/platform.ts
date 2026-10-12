@@ -21,7 +21,7 @@ export let platform: PlatformInfo = {
   os: "web",
   arch: "",
   mobile: false,
-  version: "0.2.0",
+  version: "0.2.1",
   shell: null,
   secretBackend: "browser-storage",
 };

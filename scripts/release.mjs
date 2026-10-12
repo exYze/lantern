@@ -5,6 +5,7 @@
 //   node scripts/release.mjs build [windows,linux,android]   build on this machine
 //   node scripts/release.mjs fetch-ci [run-id]               add macOS and iOS builds from a GitHub Actions run (needs gh)
 //   node scripts/release.mjs publish [--notes "…"]           upload release/<version>/ to the hub
+// Add --version X to work on a version other than the one in package.json.
 //
 // Settings come from the environment or .env.local (never committed):
 //   VITE_LANTERN_HUB_URL      hub address baked into the apps built here
@@ -22,7 +23,10 @@ import { basename, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 loadEnvLocal();
-const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+const argv = process.argv.slice(2);
+const versionFlag = argv.indexOf("--version");
+// Defaults to the version in package.json; --version republishes or fetches an older one.
+const version = versionFlag >= 0 ? argv.splice(versionFlag, 2)[1] : JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const outDir = join(root, "release", version);
 const isWindows = process.platform === "win32";
 
@@ -88,8 +92,10 @@ function buildWindows() {
   if (env.TAURI_SIGNING_PRIVATE_KEY) args.push("--config", updaterConfig());
   run("npx", args, { env });
   const bundle = join(root, "src-tauri", "target", "release", "bundle");
-  for (const f of findFiles(join(bundle, "nsis"), (n) => n.endsWith("-setup.exe"))) copyInto(f);
-  for (const f of findFiles(join(bundle, "msi"), (n) => n.endsWith(".msi"))) copyInto(f);
+  // The bundle folders keep installers from earlier versions; take only this one's.
+  const current = (n) => n.includes(`_${version}_`);
+  for (const f of findFiles(join(bundle, "nsis"), (n) => current(n) && n.endsWith("-setup.exe"))) copyInto(f);
+  for (const f of findFiles(join(bundle, "msi"), (n) => current(n) && n.endsWith(".msi"))) copyInto(f);
 }
 
 function buildLinux() {
@@ -133,11 +139,8 @@ function fetchCi(runId) {
   if (dmg) copyInto(dmg, `Lantern_${version}_universal.dmg`);
   const tarball = findFiles(dir, (n) => n.endsWith(".app.tar.gz"))[0];
   if (tarball) {
-    // The macOS update archive is signed here, so the signing key never leaves this machine.
-    const name = `Lantern_${version}_universal.app.tar.gz`;
-    copyInto(tarball, name);
-    const env = { ...process.env, ...signingEnv() };
-    if (env.TAURI_SIGNING_PRIVATE_KEY) run("npx", ["tauri", "signer", "sign", join(outDir, name)], { env });
+    // The macOS update archive is signed by `publish`, so the signing key never leaves this machine.
+    copyInto(tarball, `Lantern_${version}_universal.app.tar.gz`);
   }
   const iosApp = findFiles(dir, (n, isDir) => isDir && n.endsWith(".app"))[0];
   if (iosApp) {
@@ -164,6 +167,9 @@ const KINDS = [
   [/ios-simulator\.zip$/, "ios", "ios-sim", "arm64"],
 ];
 
+/** Installers the desktop updater can install. */
+const UPDATABLE = new Set(["nsis", "msi", "appimage", "deb", "rpm", "app"]);
+
 function publish(notes) {
   const target = process.env.LANTERN_PUBLISH_SSH;
   const dir = process.env.LANTERN_PUBLISH_DIR || "/srv/lantern/releases";
@@ -187,6 +193,17 @@ function publish(notes) {
     });
   }
   if (!files.length) throw new Error(`No installers in release/${version}/.`);
+
+  // Sign every desktop update with its version bound into the signature, so a tampered manifest
+  // can't offer an older (genuinely signed) release as an "update".
+  const env = { ...process.env, ...signingEnv() };
+  for (const f of files.filter((f) => UPDATABLE.has(f.kind))) {
+    if (!env.TAURI_SIGNING_PRIVATE_KEY) break;
+    const path = join(outDir, f.name);
+    const r = spawnSync("npx", ["tauri", "signer", "sign", "--app-version", version, path], { cwd: root, env, shell: isWindows, encoding: "utf8" });
+    if (r.status !== 0) throw new Error(`signing ${f.name} failed: ${r.stderr || r.stdout}`);
+    f.signature = readFileSync(`${path}.sig`, "utf8").trim();
+  }
   const release = { version, notes: notes ?? `Lantern ${version}`, pubDate: new Date().toISOString(), files };
   writeFileSync(join(outDir, "release.json"), JSON.stringify(release, null, 2));
 
@@ -200,7 +217,7 @@ function publish(notes) {
 
 // ------------------------------------------------------------------ main
 
-const [command, ...rest] = process.argv.slice(2);
+const [command, ...rest] = argv;
 try {
   if (command === "build") {
     const wanted = (rest[0] ?? (isWindows ? "windows,android" : process.platform === "linux" ? "linux,android" : "")).split(",").filter(Boolean);
