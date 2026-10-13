@@ -37,11 +37,23 @@ async function send(req: Omit<RunnerRequest, "id" | "at" | "deviceId">): Promise
   await db.put(C.requests, full.id, full);
 }
 
+/** How long a chat shows as working on the hub before the runner confirms it took the run. */
+const UNCONFIRMED_MS = 90_000;
+
 export async function requestRun(conversationId: string): Promise<void> {
   const conv = useApp.getState().conversations.find((c) => c.id === conversationId);
   // Shown as working right away; the runner's own record replaces this when it starts.
   if (conv) {
-    useApp.setState((s) => ({ remoteRuns: { ...s.remoteRuns, [conversationId]: { id: conversationId, conversationId, botId: conv.botId, startedAt: Date.now() } } }));
+    const guess = { id: conversationId, conversationId, botId: conv.botId, startedAt: Date.now() };
+    useApp.setState((s) => ({ remoteRuns: { ...s.remoteRuns, [conversationId]: guess } }));
+    setTimeout(async () => {
+      // Never confirmed (the runner didn't take it): stop showing it as working.
+      if (useApp.getState().remoteRuns[conversationId] !== guess || (await db.get(C.runs, conversationId))) return;
+      useApp.setState((s) => {
+        const { [conversationId]: _, ...rest } = s.remoteRuns;
+        return { remoteRuns: rest };
+      });
+    }, UNCONFIRMED_MS);
   }
   await send({ kind: "run", conversationId });
 }
