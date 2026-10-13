@@ -1,10 +1,58 @@
 // One interface over the native (Tauri) backend, with a browser fallback so the
-// UI can run in a plain browser during development (`npm run dev`).
+// UI can run in a plain browser during development (`npm run dev`), and a third
+// backend the hub's runner plugs in to run bots without any app open.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { htmlToText } from "./html";
 import { uid } from "./util";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** Storage, secrets, HTTP and notifications for a runtime that is neither the app nor a browser (the hub runner). */
+export interface Backend {
+  info: PlatformInfo;
+  db: {
+    put(collection: string, id: string, data: unknown): Promise<void>;
+    get<T>(collection: string, id: string): Promise<T | null>;
+    list<T>(collection: string): Promise<T[]>;
+    delete(collection: string, id: string): Promise<void>;
+    clear(collection: string): Promise<void>;
+    search<T>(prefix: string, query: string, limit: number): Promise<SearchHit<T>[]>;
+  };
+  secrets: {
+    get(key: string): Promise<string | null>;
+    set(key: string, value: string): Promise<void>;
+    delete(key: string): Promise<void>;
+  };
+  httpRequest(req: HttpReq): Promise<HttpRes>;
+  httpStream(req: HttpReq, h: StreamHandlers): Promise<number>;
+  notify(title: string, body: string): Promise<void>;
+}
+
+let backend: Backend | null = null;
+
+export function setBackend(b: Backend) {
+  backend = b;
+  platform = b.info;
+}
+
+/** True when this code runs in the hub's runner rather than an app. */
+export const isRunner = () => backend !== null;
+
+/** Whether the user is looking at Lantern right now (the runner never has a screen). */
+export function appVisible(): boolean {
+  if (backend || typeof document === "undefined") return false;
+  return !document.hidden;
+}
+
+/** Calls `fn` when the app comes back to the foreground or the network returns. */
+export function onResume(fn: () => void) {
+  if (backend || typeof window === "undefined") return;
+  window.addEventListener("online", fn);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) fn();
+  });
+}
 
 export interface PlatformInfo {
   os: string;
@@ -21,13 +69,15 @@ export let platform: PlatformInfo = {
   os: "web",
   arch: "",
   mobile: false,
-  version: "0.4.1",
+  version: "0.5.0",
   shell: null,
   secretBackend: "browser-storage",
 };
 
 export async function initPlatform(): Promise<PlatformInfo> {
-  if (isTauri) {
+  if (backend) {
+    platform = backend.info;
+  } else if (isTauri) {
     platform = await invoke<PlatformInfo>("platform_info");
   } else {
     platform = { ...platform, mobile: /Android|iPhone|iPad/i.test(navigator.userAgent) };
@@ -103,7 +153,9 @@ export const changeListeners: {
 
 export const db = {
   async put(collection: string, id: string, data: unknown, quiet = false): Promise<void> {
-    if (isTauri) {
+    if (backend) {
+      await backend.db.put(collection, id, data);
+    } else if (isTauri) {
       await invoke("db_put", { collection, id, data });
     } else {
       const store = await webStore("readwrite");
@@ -114,17 +166,21 @@ export const db = {
     if (!quiet) changeListeners.doc?.(collection, id);
   },
   async get<T>(collection: string, id: string): Promise<T | null> {
+    if (backend) return backend.db.get<T>(collection, id);
     if (isTauri) return invoke<T | null>("db_get", { collection, id });
     const doc = await idbReq<WebDoc | undefined>((await webStore("readonly")).get([collection, id]));
     return (doc?.data as T) ?? null;
   },
   async list<T>(collection: string): Promise<T[]> {
+    if (backend) return backend.db.list<T>(collection);
     if (isTauri) return invoke<T[]>("db_list", { collection });
     const docs = await idbReq<WebDoc[]>((await webStore("readonly")).index("collection").getAll(collection));
     return docs.sort((a, b) => a.seq - b.seq).map((d) => d.data as T);
   },
   async delete(collection: string, id: string, quiet = false): Promise<void> {
-    if (isTauri) {
+    if (backend) {
+      await backend.db.delete(collection, id);
+    } else if (isTauri) {
       await invoke("db_delete", { collection, id });
     } else {
       await idbReq((await webStore("readwrite")).delete([collection, id]));
@@ -134,7 +190,9 @@ export const db = {
   async clear(collection: string, quiet = false): Promise<void> {
     const listener = quiet ? null : changeListeners.doc;
     const ids = listener ? (await db.list<{ id?: string }>(collection)).map((d) => d?.id).filter((id): id is string => !!id) : [];
-    if (isTauri) {
+    if (backend) {
+      await backend.db.clear(collection);
+    } else if (isTauri) {
       await invoke("db_clear", { collection });
     } else {
       const store = await webStore("readwrite");
@@ -144,6 +202,7 @@ export const db = {
     for (const id of ids) listener?.(collection, id);
   },
   async search<T>(prefix: string, query: string, limit = 50): Promise<SearchHit<T>[]> {
+    if (backend) return backend.db.search<T>(prefix, query, limit);
     if (isTauri) return invoke<SearchHit<T>[]>("db_search", { prefix, query, limit });
     const all = await idbReq<WebDoc[]>((await webStore("readonly")).getAll());
     const q = query.toLowerCase();
@@ -159,16 +218,19 @@ export const db = {
 
 export const secrets = {
   async set(key: string, value: string, quiet = false): Promise<void> {
-    if (isTauri) await invoke("secret_set", { key, value });
+    if (backend) await backend.secrets.set(key, value);
+    else if (isTauri) await invoke("secret_set", { key, value });
     else localStorage.setItem(`lantern.secret.${key}`, value);
     if (!quiet) changeListeners.secret?.(key);
   },
   async get(key: string): Promise<string | null> {
+    if (backend) return backend.secrets.get(key);
     if (isTauri) return invoke<string | null>("secret_get", { key });
     return localStorage.getItem(`lantern.secret.${key}`);
   },
   async delete(key: string, quiet = false): Promise<void> {
-    if (isTauri) await invoke("secret_delete", { key });
+    if (backend) await backend.secrets.delete(key);
+    else if (isTauri) await invoke("secret_delete", { key });
     else localStorage.removeItem(`lantern.secret.${key}`);
     if (!quiet) changeListeners.secret?.(key);
   },
@@ -217,6 +279,7 @@ export function abortError(): Error {
 }
 
 export async function httpRequest(req: HttpReq): Promise<HttpRes> {
+  if (backend) return backend.httpRequest(req);
   if (isTauri) return invoke<HttpRes>("http_request", { request: req });
   const ctrl = new AbortController();
   const timer = req.timeoutMs ? setTimeout(() => ctrl.abort(), req.timeoutMs) : undefined;
@@ -242,6 +305,7 @@ type StreamEvent =
 /** Streams a response body as text. Resolves with the HTTP status when the body ends. */
 export async function httpStream(req: HttpReq, h: StreamHandlers): Promise<number> {
   if (h.signal?.aborted) throw abortError();
+  if (backend) return backend.httpStream(req, h);
   if (!isTauri) {
     const res = await fetch(req.url, { method: req.method ?? "GET", headers: req.headers, body: req.body, signal: h.signal });
     h.onResponse?.(res.status, headersToObject(res.headers));
@@ -308,11 +372,11 @@ export interface FetchedPage {
 
 export async function webFetch(url: string, maxChars = 40000): Promise<FetchedPage> {
   if (isTauri) return invoke<FetchedPage>("web_fetch", { url, maxChars });
-  const res = await fetch(url);
-  const raw = await res.text();
-  const doc = new DOMParser().parseFromString(raw, "text/html");
-  const text = (doc.body?.innerText || raw).slice(0, maxChars);
-  return { url, status: res.status, contentType: res.headers.get("content-type") ?? "", title: doc.title, text, truncated: raw.length > maxChars };
+  const res = await httpRequest({ url, headers: { Accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5" }, timeoutMs: 45000 });
+  const contentType = res.headers["content-type"] ?? "";
+  const isHtml = contentType.includes("html") || (!contentType && res.body.trimStart().startsWith("<"));
+  const page = isHtml ? htmlToText(res.body) : { title: null, text: res.body };
+  return { url, status: res.status, contentType, title: page.title, text: page.text.slice(0, maxChars), truncated: page.text.length > maxChars };
 }
 
 // ---------------------------------------------------------------- files
@@ -436,6 +500,10 @@ export const mcpStdio = {
 
 export async function notify(title: string, body: string): Promise<void> {
   try {
+    if (backend) {
+      await backend.notify(title, body);
+      return;
+    }
     if (isTauri) {
       const n = await import("@tauri-apps/plugin-notification");
       let granted = await n.isPermissionGranted();

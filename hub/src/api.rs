@@ -12,6 +12,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,20 +20,68 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
+/// What devices hear on `/api/v1/events`.
+#[derive(Clone, Debug)]
+pub enum HubEvent {
+    /// Documents changed: a device (or the hub itself) pushed revision `rev`.
+    Change { rev: i64, device: String },
+    /// A reply the runner is still writing (not stored until it's done).
+    Live { device: String, message: Value },
+    /// A notification from the runner for devices that aren't looking.
+    Notify { title: String, body: String },
+    /// The runner came online or went away.
+    Runner(Value),
+}
+
+/// The runner: the hub's always-on device that runs bots while no app is open.
+#[derive(Clone, Debug)]
+pub struct RunnerState {
+    pub device: String,
+    pub version: String,
+    pub last_seen: i64,
+    /// Whether devices were last told it's online.
+    pub announced: bool,
+}
+
+/// A runner that hasn't checked in for this long is offline (it checks in every 30 seconds).
+const RUNNER_TIMEOUT_MS: i64 = 90_000;
+
 pub struct Hub {
     pub config: Config,
     pub store: Store,
     pub tools: Tools,
-    /// (revision, device id) after each push, for live updates.
-    pub events: broadcast::Sender<(i64, String)>,
+    /// Changes, live replies and notifications, for `/api/v1/events`.
+    pub events: broadcast::Sender<HubEvent>,
+    pub runner: Mutex<Option<RunnerState>>,
     /// Failed pairing attempts in the current minute: (window start, count).
     pair_failures: Mutex<(i64, u32)>,
+    /// Webhook calls per routine in the current minute: (window start, count).
+    pub hook_calls: Mutex<HashMap<String, (i64, u32)>>,
 }
 
 impl Hub {
     pub fn new(config: Config, store: Store, tools: Tools) -> Self {
-        let (events, _) = broadcast::channel(256);
-        Hub { config, store, tools, events, pair_failures: Mutex::new((0, 0)) }
+        let (events, _) = broadcast::channel(512);
+        Hub { config, store, tools, events, runner: Mutex::new(None), pair_failures: Mutex::new((0, 0)), hook_calls: Mutex::new(HashMap::new()) }
+    }
+
+    pub fn runner_status(&self) -> Value {
+        match &*self.runner.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(r) => json!({ "online": now_ms() - r.last_seen < RUNNER_TIMEOUT_MS, "version": r.version, "lastSeen": r.last_seen }),
+            None => json!({ "online": false }),
+        }
+    }
+
+    /// Tells devices when the runner stops checking in (called every few seconds).
+    pub fn check_runner(&self) {
+        let mut guard = self.runner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = guard.as_mut() {
+            if r.announced && now_ms() - r.last_seen >= RUNNER_TIMEOUT_MS {
+                r.announced = false;
+                drop(guard);
+                let _ = self.events.send(HubEvent::Runner(self.runner_status()));
+            }
+        }
     }
 
     /// True when `tailscale serve` says the request comes from one of the hub
@@ -84,6 +133,9 @@ fn auth(hub: &Hub, headers: &HeaderMap) -> ApiResult<Device> {
 pub fn router(hub: Shared) -> Router {
     Router::new()
         .route("/api/v1/info", get(info))
+        .route("/api/v1/live", post(live))
+        .route("/api/v1/notify", post(notify))
+        .route("/api/v1/runner", post(runner_checkin))
         .route("/api/v1/pair", post(pair))
         .route("/api/v1/me", get(me))
         .route("/api/v1/changes", get(changes))
@@ -101,14 +153,19 @@ pub fn router(hub: Shared) -> Router {
 
 async fn info(State(hub): State<Shared>, headers: HeaderMap) -> Json<Value> {
     let device = bearer(&headers).and_then(|t| hub.store.device_for_token(t));
-    Json(json!({
+    let mut out = json!({
         "app": "lantern-hub",
         "name": hub.config.name,
         "version": env!("CARGO_PKG_VERSION"),
         "hubId": hub.store.hub_id(),
         "canAutoPair": hub.from_owner_device(&headers),
         "device": device,
-    }))
+    });
+    if device.is_some() {
+        out["runner"] = hub.runner_status();
+        out["hookUrls"] = json!(hub.config.hook_urls);
+    }
+    Json(out)
 }
 
 #[derive(Deserialize)]
@@ -206,7 +263,7 @@ async fn push(State(hub): State<Shared>, headers: HeaderMap, Json(body): Json<Pu
         return Ok(Json(json!({ "rev": hub.store.current_rev() })));
     }
     let rev = hub.store.push(&device.id, &body.changes).map_err(bad)?;
-    let _ = hub.events.send((rev, device.id));
+    let _ = hub.events.send(HubEvent::Change { rev, device: device.id });
     Ok(Json(json!({ "rev": rev })))
 }
 
@@ -219,10 +276,16 @@ async fn events(State(hub): State<Shared>, headers: HeaderMap) -> ApiResult<impl
         // A device removed while connected stops getting events at the next change.
         .take_while(move |_| checker.store.device_for_token(&token).is_some())
         .filter_map(|r| {
-        // A lagging client just pulls; it never needs every event.
-        let (rev, device) = r.unwrap_or((0, String::new()));
-        Some(Ok::<_, Infallible>(Event::default().event("change").data(json!({ "rev": rev, "device": device }).to_string())))
-    });
+            let event = match r {
+                Ok(HubEvent::Change { rev, device }) => Event::default().event("change").data(json!({ "rev": rev, "device": device }).to_string()),
+                Ok(HubEvent::Live { device, message }) => Event::default().event("live").data(json!({ "type": "live", "device": device, "message": message }).to_string()),
+                Ok(HubEvent::Notify { title, body }) => Event::default().event("notify").data(json!({ "type": "notify", "title": title, "body": body }).to_string()),
+                Ok(HubEvent::Runner(status)) => Event::default().event("runner").data(json!({ "type": "runner", "runner": status }).to_string()),
+                // A lagging client missed some events: a plain change makes it pull.
+                Err(_) => Event::default().event("change").data(json!({ "rev": 0, "device": "" }).to_string()),
+            };
+            Some(Ok::<_, Infallible>(event))
+        });
     let stream = tokio_stream::once(Ok::<_, Infallible>(hello)).chain(updates);
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20))))
 }
@@ -239,6 +302,61 @@ async fn lease(State(hub): State<Shared>, headers: HeaderMap, Json(body): Json<L
     let ttl = body.ttl_ms.unwrap_or(3_600_000).clamp(1_000, 86_400_000);
     let granted = hub.store.lease(&body.key, &device.id, ttl).map_err(internal)?;
     Ok(Json(json!({ "granted": granted })))
+}
+
+// ------------------------------------------------------------------ runner
+
+#[derive(Deserialize)]
+struct LiveBody {
+    message: Value,
+}
+
+/// Relays a reply that's still being written to every other device.
+async fn live(State(hub): State<Shared>, headers: HeaderMap, Json(body): Json<LiveBody>) -> ApiResult<Json<Value>> {
+    let device = auth(&hub, &headers)?;
+    if body.message.to_string().len() > 512 * 1024 {
+        return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "live message too large".into()));
+    }
+    let _ = hub.events.send(HubEvent::Live { device: device.id, message: body.message });
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+struct NotifyBody {
+    title: String,
+    #[serde(default)]
+    body: String,
+}
+
+async fn notify(State(hub): State<Shared>, headers: HeaderMap, Json(n): Json<NotifyBody>) -> ApiResult<Json<Value>> {
+    auth(&hub, &headers)?;
+    let clip = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+    let _ = hub.events.send(HubEvent::Notify { title: clip(&n.title, 200), body: clip(&n.body, 1000) });
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+struct RunnerCheckin {
+    #[serde(default)]
+    version: String,
+}
+
+/// The runner checks in every 30 seconds; devices hear when it comes online.
+async fn runner_checkin(State(hub): State<Shared>, headers: HeaderMap, Json(body): Json<RunnerCheckin>) -> ApiResult<Json<Value>> {
+    let device = auth(&hub, &headers)?;
+    if device.platform != "runner" {
+        return Err(ApiError(StatusCode::FORBIDDEN, "Only the hub's runner checks in here.".into()));
+    }
+    let came_online = {
+        let mut guard = hub.runner.lock().unwrap_or_else(|e| e.into_inner());
+        let was = guard.as_ref().is_some_and(|r| r.announced && r.device == device.id);
+        *guard = Some(RunnerState { device: device.id, version: body.version.chars().take(40).collect(), last_seen: now_ms(), announced: true });
+        !was
+    };
+    if came_online {
+        let _ = hub.events.send(HubEvent::Runner(hub.runner_status()));
+    }
+    Ok(Json(json!({})))
 }
 
 // ------------------------------------------------------------------ tools

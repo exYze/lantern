@@ -5,23 +5,25 @@ import { HubConnectForm } from "../components/HubConnect";
 import { ModelPicker } from "../components/ModelPicker";
 import { ProviderForm } from "../components/ProviderForm";
 import { Button, confirmDialog, Field, IconButton, Modal, Pill, Toggle } from "../components/ui";
+import { firecrawlSearch } from "../lib/firecrawl";
 import { listModels } from "../lib/llm";
 import { hubDevices, hubToolInfo, type HubDevice } from "../lib/hub";
-import { capabilities, fs, isTauri, openExternal, pickFolder, platform } from "../lib/platform";
+import { capabilities, fs, httpRequest, isTauri, openExternal, pickFolder, platform, secrets } from "../lib/platform";
 import { addApprovalRule, deleteProvider, exportData, importData, saveProvider, toast, updateSettings, useApp, type View } from "../lib/store";
 import { disconnectHub, syncNow, type SyncState } from "../lib/sync";
 import { BUILTIN_TOOLS } from "../lib/tools";
 import { checkForUpdates } from "../lib/updates";
-import { timeAgo } from "../lib/util";
-import type { Provider } from "../lib/types";
+import { timeAgo, uid } from "../lib/util";
+import type { Provider, TelegramSettings } from "../lib/types";
 import { PageHead } from "./PageHead";
 import logo from "../assets/lantern.svg";
 
-type Section = "models" | "hub" | "approvals" | "general" | "voice" | "data" | "about";
+type Section = "models" | "hub" | "connections" | "approvals" | "general" | "voice" | "data" | "about";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "models", label: "Models" },
   { id: "hub", label: "Hub" },
+  { id: "connections", label: "Phone & Telegram" },
   { id: "approvals", label: "Approvals" },
   { id: "general", label: "General" },
   { id: "voice", label: "Voice" },
@@ -46,6 +48,7 @@ export function SettingsView() {
         <div className="settings-body">
           {section === "models" && <ModelsSection />}
           {section === "hub" && <HubSection />}
+          {section === "connections" && <ConnectionsSection />}
           {section === "approvals" && <ApprovalsSection />}
           {section === "general" && <GeneralSection />}
           {section === "voice" && <VoiceSection />}
@@ -188,6 +191,34 @@ function syncLabel(sync: SyncState): string {
   }
 }
 
+function RunnerCard() {
+  const runner = useApp((s) => s.runner);
+  const runOn = useApp((s) => s.settings.runOn ?? "hub");
+  return (
+    <>
+      <div className="card">
+        <div className="list-main">
+          <span className={`hub-status ${runner?.online ? "online" : "offline"}`}>
+            {runner?.online ? <Check size={14} /> : <CloudOff size={14} />}
+            <strong>Runner {runner?.online ? "online" : "offline"}</strong>
+          </span>
+          <span className="muted small">
+            {runner?.online
+              ? `Your hub runs your bots${runner.version ? ` (runner ${runner.version})` : ""}: chats, routines, webhooks and Telegram keep going when every app is closed.`
+              : "Without the runner, bots work in the app you chat from, and routines run only while Lantern is open. Install it on the hub with install.sh (docs/HUB.md, Runner)."}
+          </span>
+        </div>
+      </div>
+      <Field label="Where bots work" hint="On the hub, a chat you start on your phone keeps going after you lock it. Bots with files on this device, or local plugins, always work here.">
+        <select className="select" value={runOn} onChange={(e) => void updateSettings({ runOn: e.target.value as "hub" | "device" })}>
+          <option value="hub">On your hub, when its runner is online</option>
+          <option value="device">On the device you chat from</option>
+        </select>
+      </Field>
+    </>
+  );
+}
+
 function HubConnected({ sync }: { sync: SyncState }) {
   const hub = useApp((s) => s.hub)!;
   const settings = useApp((s) => s.settings);
@@ -247,6 +278,8 @@ function HubConnected({ sync }: { sync: SyncState }) {
         </Button>
       </div>
 
+      <RunnerCard />
+
       <Field label="Bots' files and terminal" hint="On the hub, every device sees the same workspace, and phones get a terminal too. A bot can override this in its settings.">
         <select className="select" value={settings.computer ?? "hub"} onChange={(e) => void updateSettings({ computer: e.target.value as "hub" | "device" })}>
           <option value="hub">On the hub, shared by all devices{hub.tools ? ` (${hub.tools.workspace})` : ""}</option>
@@ -271,10 +304,12 @@ function HubConnected({ sync }: { sync: SyncState }) {
                   <strong>{d.name}</strong> {d.id === hub.deviceId && <Pill tone="accent">This device</Pill>}
                 </span>
                 <span className="muted small">
-                  {d.platform} · paired {new Date(d.createdAt).toLocaleDateString()} via {d.pairedVia === "tailscale" ? "Tailscale" : "code"} · seen {timeAgo(d.lastSeen)}
+                  {d.platform === "runner"
+                    ? `Runs your bots on the hub · seen ${timeAgo(d.lastSeen)}`
+                    : `${d.platform} · paired ${new Date(d.createdAt).toLocaleDateString()} via ${d.pairedVia === "tailscale" ? "Tailscale" : "code"} · seen ${timeAgo(d.lastSeen)}`}
                 </span>
               </div>
-              {d.id !== hub.deviceId && (
+              {d.id !== hub.deviceId && d.platform !== "runner" && (
                 <IconButton
                   label="Remove device"
                   onClick={async () => {
@@ -430,6 +465,7 @@ function GeneralSection() {
           <input className="input mono" value={settings.search.url ?? ""} placeholder="http://localhost:8888" onChange={(e) => void updateSettings({ search: { ...settings.search, url: e.target.value } })} />
         </Field>
       )}
+      <FirecrawlSettings />
       <Field label="Time zone" hint="Used for dates in prompts and routine times.">
         <input className="input" value={settings.timezone ?? ""} placeholder={Intl.DateTimeFormat().resolvedOptions().timeZone} onChange={(e) => void updateSettings({ timezone: e.target.value || undefined })} />
       </Field>
@@ -439,6 +475,208 @@ function GeneralSection() {
       <Field label="Max tool steps per reply">
         <input className="input" type="number" min={1} max={200} value={settings.maxSteps} onChange={(e) => void updateSettings({ maxSteps: Math.min(200, Math.max(1, Number(e.target.value) || 24)) })} />
       </Field>
+    </div>
+  );
+}
+
+function FirecrawlSettings() {
+  const fc = useApp((s) => s.settings.firecrawl);
+  const [testing, setTesting] = useState(false);
+  const value = fc ?? { url: "", search: true, read: true };
+  const save = (patch: Partial<typeof value>) => void updateSettings({ firecrawl: { ...value, ...patch } });
+  return (
+    <>
+      <Field label="Firecrawl server (optional)" hint="A self-hosted Firecrawl reads pages in a real browser and searches with its own engine, so bots get cleaner text from JavaScript-heavy sites, plus site maps and crawls.">
+        <div className="row">
+          <input className="input mono" value={value.url} placeholder="http://firecrawl.local:3002" onChange={(e) => save({ url: e.target.value.trim() })} />
+          <Button
+            size="sm"
+            disabled={!value.url || testing}
+            onClick={async () => {
+              setTesting(true);
+              try {
+                const r = await firecrawlSearch(value.url, "Lantern open source", 2);
+                toast(`Firecrawl answered with ${r.length} results.`, "success");
+              } catch (e) {
+                toast((e as Error).message, "error");
+              } finally {
+                setTesting(false);
+              }
+            }}
+          >
+            {testing ? "Testing…" : "Test"}
+          </Button>
+        </div>
+      </Field>
+      {!!value.url && (
+        <>
+          <Toggle label="Search with Firecrawl" description="Your web search setting below stays as the fallback if Firecrawl is down." checked={value.search} onChange={(search) => save({ search })} />
+          <Toggle label="Read pages with Firecrawl" description="web_fetch asks Firecrawl first, then fetches the page directly if that fails." checked={value.read} onChange={(read) => save({ read })} />
+        </>
+      )}
+    </>
+  );
+}
+
+function newLinkCode(): string {
+  const raw = uid("").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/[01OIL]/g, "7");
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}`;
+}
+
+function ConnectionsSection() {
+  const settings = useApp((s) => s.settings);
+  const bots = useApp((s) => s.bots);
+  const runnerOnline = useApp((s) => !!s.runner?.online);
+  const hub = useApp((s) => s.hub);
+  const push = settings.push ?? { server: "https://ntfy.sh", topic: "" };
+  const tg: TelegramSettings = settings.telegram ?? { enabled: false, chats: [] };
+  const [token, setToken] = useState("");
+  const [ntfyToken, setNtfyToken] = useState("");
+  const savePush = (patch: Partial<typeof push>) => void updateSettings({ push: { ...push, ...patch } });
+  const saveTg = (patch: Partial<TelegramSettings>) => void updateSettings({ telegram: { ...tg, ...patch } });
+
+  return (
+    <div className="form">
+      <h2>Phone & Telegram</h2>
+      {!hub || !runnerOnline ? (
+        <p className="small">
+          These work through your hub's runner, which {hub ? "isn't online right now" : "needs a Lantern Hub"}. You can set them up now; they start when the runner is online.
+        </p>
+      ) : null}
+
+      <h3>Phone notifications (ntfy)</h3>
+      <p className="muted small">
+        Lantern can't reach a closed app on your phone, so the hub sends notifications through ntfy, a small open-source push service. Install the ntfy app, subscribe to the topic below,
+        and you'll hear when a bot needs approval, a routine finishes, or a long task is done. Use your own ntfy server, or ntfy.sh with a topic nobody can guess.
+      </p>
+      <Field label="ntfy server">
+        <input className="input mono" value={push.server} placeholder="https://ntfy.sh" onChange={(e) => savePush({ server: e.target.value.trim() })} />
+      </Field>
+      <Field label="Topic" hint="Like a password: anyone who knows it can read your notifications.">
+        <div className="row">
+          <input className="input mono" value={push.topic} placeholder="lantern-…" onChange={(e) => savePush({ topic: e.target.value.trim() })} />
+          <Button size="sm" onClick={() => savePush({ topic: `lantern-${uid("").slice(0, 12)}` })}>
+            New topic
+          </Button>
+        </div>
+      </Field>
+      <Field label="Access token (only if your ntfy server needs one)">
+        <div className="row">
+          <input className="input" type="password" autoComplete="off" value={ntfyToken} placeholder="tk_…" onChange={(e) => setNtfyToken(e.target.value)} />
+          <Button
+            size="sm"
+            disabled={!ntfyToken}
+            onClick={async () => {
+              await secrets.set("push:ntfy", ntfyToken);
+              setNtfyToken("");
+              toast("Saved.", "success");
+            }}
+          >
+            Save
+          </Button>
+        </div>
+      </Field>
+      <Toggle label="Hide what bots say" description="Notifications only say which bot wants you, not what it wrote." checked={!!push.hideText} onChange={(hideText) => savePush({ hideText })} />
+      <div className="row wrap">
+        <Button
+          disabled={!push.server || !push.topic}
+          onClick={async () => {
+            try {
+              const t = await secrets.get("push:ntfy");
+              const res = await httpRequest({
+                method: "POST",
+                url: push.server.replace(/\/+$/, ""),
+                headers: { "Content-Type": "application/json", ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+                body: JSON.stringify({ topic: push.topic, title: "Lantern", message: "Notifications from your bots will look like this." }),
+                timeoutMs: 15000,
+              });
+              toast(res.status < 400 ? "Sent. Check your phone." : `ntfy answered ${res.status}.`, res.status < 400 ? "success" : "error");
+            } catch (e) {
+              toast((e as Error).message, "error");
+            }
+          }}
+        >
+          Send a test
+        </Button>
+        {push.topic && (
+          <Button variant="ghost" onClick={() => void openExternal(`${push.server.replace(/\/+$/, "")}/${push.topic}`)}>
+            <ExternalLink size={16} /> Open the topic
+          </Button>
+        )}
+      </div>
+
+      <h3>Telegram</h3>
+      <p className="muted small">
+        Talk to your bots from Telegram, including voice notes and photos, and answer approvals with a tap. Only chats you link below can use it.
+      </p>
+      <ol className="steps small">
+        <li>
+          In Telegram, message <strong>@BotFather</strong>, send <code>/newbot</code>, and copy the token it gives you.
+        </li>
+        <li>Paste the token here and switch Telegram on.</li>
+        <li>Send the link command below to your new bot.</li>
+      </ol>
+      <Field label={tg.username ? `Bot token (connected as @${tg.username}; paste a new one to replace it)` : "Bot token"}>
+        <div className="row">
+          <input className="input mono" type="password" autoComplete="off" value={token} placeholder="123456:ABC…" onChange={(e) => setToken(e.target.value.trim())} />
+          <Button
+            size="sm"
+            disabled={!/^\d+:[\w-]{20,}$/.test(token)}
+            onClick={async () => {
+              await secrets.set("telegram:token", token);
+              setToken("");
+              saveTg({ enabled: true, username: undefined });
+              toast("Saved. Your hub connects to Telegram in a moment.", "success");
+            }}
+          >
+            Save
+          </Button>
+        </div>
+      </Field>
+      <Toggle label="Telegram on" checked={tg.enabled} onChange={(enabled) => saveTg({ enabled })} />
+      <Field label="Answers new chats">
+        <select className="select" value={tg.botId ?? ""} onChange={(e) => saveTg({ botId: e.target.value || undefined })}>
+          <option value="">Your primary bot (or the first one)</option>
+          {bots.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <div className="row wrap">
+        <Button onClick={() => saveTg({ linkCode: newLinkCode() })}>Link a chat</Button>
+        {tg.linkCode && (
+          <span className="small">
+            Send <code>/link {tg.linkCode}</code> to {tg.username ? <strong>@{tg.username}</strong> : "your bot"}
+            {tg.username && (
+              <>
+                {" "}
+                or{" "}
+                <button className="link" onClick={() => void openExternal(`https://t.me/${tg.username}?start=${tg.linkCode!.replace("-", "")}`)}>
+                  open it in Telegram
+                </button>
+              </>
+            )}
+            . The code works once.
+          </span>
+        )}
+      </div>
+      {tg.chats.length > 0 && (
+        <ul className="list">
+          {tg.chats.map((c) => (
+            <li key={c.id}>
+              <div className="list-main">
+                <strong>{c.name}</strong>
+                <span className="muted small">Talks to {bots.find((b) => b.id === (c.botId ?? tg.botId ?? settings.primaryBotId))?.name ?? bots[0]?.name ?? "your bots"} · send /use to switch</span>
+              </div>
+              <IconButton label="Unlink" onClick={() => saveTg({ chats: tg.chats.filter((x) => x.id !== c.id) })}>
+                <Trash2 size={15} />
+              </IconButton>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

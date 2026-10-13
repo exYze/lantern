@@ -1,7 +1,9 @@
-import { BookOpen, Clock, Flame, LayoutGrid, MessageSquare, Pin, Plug, Plus, Settings, Trash2 } from "lucide-react";
+import { BookOpen, Clock, Flame, LayoutGrid, MessageSquare, Pin, Plug, Plus, Send, Settings, Star, Trash2, Users } from "lucide-react";
 import type { ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { createBlankBot } from "../lib/bots";
-import { deleteConversation, openConversation, selectBot, setView, useApp, type View } from "../lib/store";
+import { deleteConversation, isBusy, openConversation, selectBot, setView, useApp, type View } from "../lib/store";
+import type { Conversation } from "../lib/types";
 import { timeAgo } from "../lib/util";
 import { Avatar } from "./Avatar";
 import { confirmDialog, IconButton } from "./ui";
@@ -12,11 +14,13 @@ export function Sidebar() {
   const activeBotId = useApp((s) => s.activeBotId);
   const activeConvId = useApp((s) => s.activeConversationId);
   const view = useApp((s) => s.view);
-  const running = useApp((s) => s.running);
+  const busy = useApp(useShallow((s) => ({ running: s.running, remoteRuns: s.remoteRuns, runner: s.runner })));
   const conversations = useApp((s) => s.conversations);
   const routinesNeedingCount = useApp((s) => s.routines.filter((r) => r.enabled).length);
+  const primaryBotId = useApp((s) => s.settings.primaryBotId);
 
-  const busyBots = new Set(conversations.filter((c) => running[c.id]).map((c) => c.botId));
+  const busyBots = new Set(conversations.filter((c) => isBusy(busy, c.id)).map((c) => c.botId));
+  const chatIcon = (c: Conversation) => (c.routineId ? <Clock size={14} /> : c.from ? <Users size={14} /> : c.channel ? <Send size={14} /> : <MessageSquare size={14} />);
   const chats = conversations.filter((c) => c.botId === activeBotId);
   const navItem = (v: View, label: string, icon: ReactNode, badge?: number) => (
     <button key={label} className={`nav-item${view.kind === v.kind ? " active" : ""}`} onClick={() => setView(v)}>
@@ -46,6 +50,7 @@ export function Sidebar() {
             <span className="bot-item-text">
               <span className="bot-item-name">
                 {b.name}
+                {b.id === primaryBotId && <Star size={11} className="muted" aria-label="Primary bot" />}
                 {b.pinned && <Pin size={11} className="muted" />}
               </span>
               <span className="bot-item-tagline">{b.tagline}</span>
@@ -68,9 +73,9 @@ export function Sidebar() {
             {chats.map((c) => (
               <div key={c.id} className={`chat-item${c.id === activeConvId && view.kind === "chat" ? " active" : ""}`}>
                 <button className="chat-item-main" onClick={() => openConversation(c.id)}>
-                  {c.routineId ? <Clock size={14} /> : <MessageSquare size={14} />}
+                  {chatIcon(c)}
                   <span className="chat-item-title">{c.title}</span>
-                  {running[c.id] ? <Flame size={13} className="live-flame" aria-label="Working" /> : <span className="chat-item-time">{timeAgo(c.updatedAt)}</span>}
+                  {isBusy(busy, c.id) ? <Flame size={13} className="live-flame" aria-label="Working" /> : <span className="chat-item-time">{timeAgo(c.updatedAt)}</span>}
                 </button>
                 <IconButton
                   label="Delete chat"

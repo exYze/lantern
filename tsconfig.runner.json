@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node",
+      "vite/client"
+    ]
+  },
+  "include": [
+    "src/runner",
+    "src/lib"
+  ],
+  "exclude": [
+    "src/lib/**/*.test.ts"
+  ]
+}

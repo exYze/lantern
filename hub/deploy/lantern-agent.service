@@ -7,6 +7,8 @@ After=network-online.target
 User=lantern-agent
 Group=lantern-agent
 Environment=SHELL=/bin/bash HOME=/home/lantern-agent
+# LANTERN_HUB_BROWSER: the headless browser install.sh set up for bots.
+EnvironmentFile=-/etc/lantern-agent.env
 WorkingDirectory=/home/lantern-agent
 ExecStart=/usr/local/bin/lantern-hub agent --socket /run/lantern-agent/agent.sock --workspace /home/lantern-agent/workspace
 Restart=on-failure

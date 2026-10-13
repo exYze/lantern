@@ -175,6 +175,18 @@ impl Store {
         Ok(rev)
     }
 
+    /// One stored document, unless it doesn't exist or was deleted.
+    pub fn get_doc(&self, c: &str, id: &str) -> Option<Value> {
+        let data: Option<String> = self
+            .conn()
+            .query_row("SELECT data FROM docs WHERE collection = ?1 AND id = ?2 AND deleted = 0", params![c, id], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+            .flatten();
+        data.and_then(|s| serde_json::from_str(&s).ok())
+    }
+
     /// Changes after `since`, oldest first. The caller's own writes are skipped
     /// (it already has them) but still advance the cursor.
     pub fn changes(&self, since: i64, limit: usize, device: &str) -> Result<ChangePage, String> {
@@ -272,6 +284,12 @@ impl Store {
             })
             .map_err(|e| e.to_string())?;
         rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    /// Replaces the hub's runner device and returns its new token (only one runner at a time).
+    pub fn reset_runner(&self) -> Result<(String, String), String> {
+        self.conn().execute("DELETE FROM devices WHERE platform = 'runner'", []).map_err(|e| e.to_string())?;
+        self.add_device("Hub runner", "runner", "local")
     }
 
     pub fn remove_device(&self, id: &str) -> Result<bool, String> {
@@ -420,6 +438,26 @@ mod tests {
         assert!(s.device_for_token("lh_wrong").is_none());
         assert!(s.remove_device(&id).unwrap());
         assert!(s.device_for_token(&token).is_none());
+    }
+
+    #[test]
+    fn documents_can_be_read_back_until_deleted() {
+        let s = store();
+        s.push("A", &[put("routines", "r1", json!({"name": "Daily"}))]).unwrap();
+        assert_eq!(s.get_doc("routines", "r1").unwrap()["name"], "Daily");
+        s.push("A", &[Change { c: "routines".into(), id: "r1".into(), d: None, del: true, rev: 0 }]).unwrap();
+        assert!(s.get_doc("routines", "r1").is_none());
+        assert!(s.get_doc("routines", "missing").is_none());
+    }
+
+    #[test]
+    fn there_is_only_ever_one_runner() {
+        let s = store();
+        let (first, old_token) = s.reset_runner().unwrap();
+        let (second, token) = s.reset_runner().unwrap();
+        assert_ne!(first, second);
+        assert!(s.device_for_token(&old_token).is_none());
+        assert_eq!(s.device_for_token(&token).unwrap().platform, "runner");
     }
 
     #[test]

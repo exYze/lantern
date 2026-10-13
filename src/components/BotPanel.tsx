@@ -1,21 +1,30 @@
 import { Dices, FolderOpen, KeyRound, Pencil, Play, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { usesHub } from "../lib/hub";
+import { browserAvailable } from "../lib/browser";
+import { hubConnection, hubMail, usesHub } from "../lib/hub";
+import { emailSecretKey, mailAccount } from "../lib/mail";
 import { capabilities, pickFolder, platform, secrets } from "../lib/platform";
-import { runRoutine } from "../lib/routines";
+import { describeRoutineTrigger, runRoutine } from "../lib/routines";
+import { teamFor } from "../lib/team";
 import { toolEnabled } from "../lib/tools";
-import { describeSchedule } from "../lib/schedule";
-import { addMemory, botSecretKey, deleteBot, deleteMemory, deleteRoutine, deleteSkill, saveBot, saveRoutine, saveSkill, setView, useApp, workspaceFor } from "../lib/store";
-import type { ApprovalMode, Bot, BotToolToggles, Skill } from "../lib/types";
+import { nextRun } from "../lib/schedule";
+import { addMemory, botSecretKey, deleteBot, deleteMemory, deleteRoutine, deleteSkill, saveBot, saveRoutine, saveSkill, setView, toast, updateSettings, useApp, workspaceFor } from "../lib/store";
+import type { ApprovalMode, Bot, BotEmail, BotToolToggles, Routine, Skill } from "../lib/types";
 import { timeAgo, uid } from "../lib/util";
+import { BrowserView } from "./BrowserView";
 import { APPROVAL_MODES } from "./ChatView";
 import { AVATAR_COLORS, AVATAR_EYES, AVATAR_MOUTHS, AVATAR_SHAPES, Avatar, randomAvatar } from "./Avatar";
 import { ModelPicker } from "./ModelPicker";
 import { RoutineEditor } from "./RoutineEditor";
 import { Button, confirmDialog, Empty, Field, IconButton, Modal, Tabs, Toggle } from "./ui";
 
-type Tab = "profile" | "model" | "tools" | "skills" | "memory" | "plugins" | "secrets" | "routines";
+type Tab = "profile" | "model" | "tools" | "skills" | "memory" | "plugins" | "secrets" | "routines" | "browser" | "email";
+
+/** The primary bot's daily check-in: it looks over recent work and offers to take things off your plate. */
+export const CHECK_IN_PROMPT =
+  "Check in with the user. Use recent_chats (all bots) and your routines to see what has happened since your last check-in, and follow up on anything you were asked to keep an eye on. If you spot work you or another bot could take off the user's plate, offer it as a short list (at most three items), each with what you'd do. If there's nothing worth raising, reply with exactly: Nothing new.";
+const checkInId = (botId: string) => `checkin_${botId}`;
 
 const TOOL_INFO: { key: keyof BotToolToggles; label: string; description: string; desktopOnly?: boolean }[] = [
   { key: "files", label: "Files", description: "Read, write, edit, search and delete files in the workspace." },
@@ -26,12 +35,23 @@ const TOOL_INFO: { key: keyof BotToolToggles; label: string; description: string
   { key: "routines", label: "Routines", description: "Schedule recurring tasks for itself." },
   { key: "conversationSearch", label: "Chat history", description: "Search earlier chats with you." },
   { key: "subagents", label: "Subagents", description: "Hand tasks to helpers that work on their own and report back, several at once." },
+  { key: "bots", label: "Other bots", description: "Ask your other bots for help, or hand them a whole task." },
+  { key: "browser", label: "Browser", description: "Use a web browser on your hub for sites that need clicking or signing in. You can watch and take over." },
+  { key: "email", label: "Email", description: "Read and send mail from this bot's own inbox (set it up in the Email tab)." },
 ];
 
 export function BotPanel() {
   const bot = useApp((s) => s.bots.find((b) => b.id === s.activeBotId));
-  const [tab, setTab] = useState<Tab>("profile");
+  const wanted = useApp((s) => s.detailsTab);
+  const [tab, setTab] = useState<Tab>((wanted as Tab) ?? "profile");
+  useApp((s) => s.hub?.tools);
+  useEffect(() => {
+    if (!wanted) return;
+    setTab(wanted as Tab);
+    useApp.setState({ detailsTab: null });
+  }, [wanted]);
   if (!bot) return null;
+  const hasBrowser = browserAvailable(bot);
   const close = () => useApp.setState({ detailsOpen: false });
   return (
     <aside className="details">
@@ -54,6 +74,8 @@ export function BotPanel() {
           { id: "plugins", label: "Plugins" },
           { id: "secrets", label: "Secrets" },
           { id: "routines", label: "Routines" },
+          ...(hubConnection() ? [{ id: "email" as const, label: "Email" }] : []),
+          ...(hasBrowser ? [{ id: "browser" as const, label: "Browser" }] : []),
         ]}
       />
       <div className="details-body">
@@ -65,6 +87,8 @@ export function BotPanel() {
         {tab === "plugins" && <PluginsTab bot={bot} />}
         {tab === "secrets" && <SecretsTab bot={bot} />}
         {tab === "routines" && <RoutinesTab bot={bot} />}
+        {tab === "email" && <EmailTab bot={bot} />}
+        {tab === "browser" && <BrowserView bot={bot} />}
       </div>
     </aside>
   );
@@ -133,6 +157,7 @@ function ProfileTab({ bot }: { bot: Bot }) {
         <textarea className="input" rows={10} value={instructions} onChange={(e) => setInstructions(e.target.value)} onBlur={commitInstructions} />
       </Field>
       <Toggle label="Pin to top" checked={!!bot.pinned} onChange={(pinned) => void saveBot({ ...bot, pinned })} />
+      <PrimaryToggle bot={bot} />
       <div className="danger-zone">
         <Button
           variant="danger"
@@ -146,6 +171,48 @@ function ProfileTab({ bot }: { bot: Bot }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+function PrimaryToggle({ bot }: { bot: Bot }) {
+  const primaryId = useApp((s) => s.settings.primaryBotId);
+  const checkIn = useApp((s) => s.routines.find((r) => r.id === checkInId(bot.id)));
+  const team = teamFor(bot);
+  const isPrimary = primaryId === bot.id;
+  return (
+    <>
+      <Toggle
+        label="Primary bot"
+        description={`Your main point of contact: it coordinates your other bots${team.length ? ` (${team.map((b) => b.name).join(", ")})` : ""} and can check in with you.`}
+        checked={isPrimary}
+        onChange={(on) => void updateSettings({ primaryBotId: on ? bot.id : undefined })}
+      />
+      {isPrimary && (
+        <Toggle
+          label="Daily check-in"
+          description="Every morning it looks over recent work and offers to take things off your plate. When there's nothing worth raising, it stays quiet."
+          checked={!!checkIn?.enabled}
+          onChange={async (on) => {
+            if (on) {
+              const routine: Routine = {
+                id: checkInId(bot.id),
+                botId: bot.id,
+                name: "Check-in",
+                prompt: CHECK_IN_PROMPT,
+                schedule: { kind: "daily", time: "08:30" },
+                trigger: { kind: "schedule" },
+                quiet: true,
+                enabled: true,
+                createdAt: Date.now(),
+              };
+              await saveRoutine({ ...routine, ...(checkIn ?? {}), enabled: true, nextRunAt: nextRun(routine.schedule, Date.now()) });
+            } else if (checkIn) {
+              await saveRoutine({ ...checkIn, enabled: false });
+            }
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -242,9 +309,17 @@ function ModelTab({ bot }: { bot: Bot }) {
 function ToolsTab({ bot }: { bot: Bot }) {
   useApp((s) => s.hub);
   const onHub = usesHub(bot);
+  const why: Partial<Record<keyof BotToolToggles, string | null>> = {
+    browser: browserAvailable(bot) ? null : "needs a Lantern Hub with the browser installed",
+    email: bot.email && hubConnection() ? null : "set up an inbox in the Email tab first",
+  };
   return (
     <div className="form">
       {TOOL_INFO.map((t) => {
+        const missing = why[t.key];
+        if (missing) {
+          return <Toggle key={t.key} label={t.label} description={`${t.description} (${missing})`} checked={false} disabled onChange={() => {}} />;
+        }
         const unsupported = !onHub && ((t.desktopOnly && !capabilities.shell) || (t.key === "files" && !capabilities.files));
         return (
           <Toggle
@@ -482,14 +557,14 @@ function RoutinesTab({ bot }: { bot: Bot }) {
   const [editing, setEditing] = useState<string | "new" | null>(null);
   return (
     <div className="form">
-      <p className="muted small">Routines are recurring tasks {bot.name} runs on a schedule. You can also ask it in chat to set one up.</p>
+      <p className="muted small">Routines are tasks {bot.name} runs on a schedule, when a webhook is called, or when mail arrives. You can also ask it in chat to set one up.</p>
       {routines.map((r) => (
         <div key={r.id} className="routine-row">
           <div className="list-main">
             <strong>{r.name}</strong>
             <span className="muted small">
-              {describeSchedule(r.schedule)}
-              {r.enabled && r.nextRunAt ? ` · next ${new Date(r.nextRunAt).toLocaleString()}` : r.enabled ? "" : " · paused"}
+              {describeRoutineTrigger(r)}
+              {r.enabled && r.nextRunAt && (r.trigger?.kind ?? "schedule") === "schedule" ? ` · next ${new Date(r.nextRunAt).toLocaleString()}` : r.enabled ? "" : " · paused"}
             </span>
           </div>
           <input type="checkbox" className="switch" checked={r.enabled} onChange={(e) => void saveRoutine({ ...r, enabled: e.target.checked })} aria-label="Enabled" />
@@ -508,6 +583,125 @@ function RoutinesTab({ bot }: { bot: Bot }) {
         <Plus size={14} /> New routine
       </Button>
       {editing && <RoutineEditor routine={routines.find((r) => r.id === editing)} botId={bot.id} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+const EMAIL_PRESETS: { label: string; imapHost: string; smtpHost: string; smtpPort: number; smtpSecurity: BotEmail["smtpSecurity"]; note?: string }[] = [
+  { label: "Gmail", imapHost: "imap.gmail.com", smtpHost: "smtp.gmail.com", smtpPort: 465, smtpSecurity: "tls", note: "Use an app password (Google Account → Security → App passwords)." },
+  { label: "Fastmail", imapHost: "imap.fastmail.com", smtpHost: "smtp.fastmail.com", smtpPort: 465, smtpSecurity: "tls", note: "Use an app password." },
+  { label: "Outlook.com", imapHost: "outlook.office365.com", smtpHost: "smtp-mail.outlook.com", smtpPort: 587, smtpSecurity: "starttls" },
+  { label: "iCloud", imapHost: "imap.mail.me.com", smtpHost: "smtp.mail.me.com", smtpPort: 587, smtpSecurity: "starttls", note: "Use an app-specific password." },
+];
+
+function EmailTab({ bot }: { bot: Bot }) {
+  const blank: BotEmail = { address: "", username: "", imapHost: "", imapPort: 993, smtpHost: "", smtpPort: 465, smtpSecurity: "tls" };
+  const [draft, setDraft] = useState<BotEmail>(bot.email ?? blank);
+  const [password, setPassword] = useState("");
+  const [testing, setTesting] = useState(false);
+  const set = (patch: Partial<BotEmail>) => setDraft({ ...draft, ...patch });
+  const valid = /.+@.+/.test(draft.address) && draft.imapHost && draft.smtpHost && (password || bot.email);
+  const preset = EMAIL_PRESETS.find((p) => p.imapHost === draft.imapHost);
+
+  return (
+    <div className="form">
+      <p className="muted small">
+        Give {bot.name} an inbox of its own (a separate address is best). It can read and answer mail, and a routine can start whenever mail arrives. Sending always goes through your
+        approval settings. The password is stored like your other secrets, and only your hub uses it.
+      </p>
+      <Field label="Provider">
+        <select
+          className="select"
+          value={preset?.label ?? ""}
+          onChange={(e) => {
+            const p = EMAIL_PRESETS.find((x) => x.label === e.target.value);
+            if (p) set({ imapHost: p.imapHost, imapPort: 993, smtpHost: p.smtpHost, smtpPort: p.smtpPort, smtpSecurity: p.smtpSecurity });
+          }}
+        >
+          <option value="">Other (enter the servers)</option>
+          {EMAIL_PRESETS.map((p) => (
+            <option key={p.label} value={p.label}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {preset?.note && <p className="small">{preset.note}</p>}
+      <Field label="Email address">
+        <input className="input" value={draft.address} placeholder="lumi@example.com" onChange={(e) => set({ address: e.target.value.trim() })} />
+      </Field>
+      <Field label="Username" hint="Usually the address itself.">
+        <input className="input" value={draft.username} placeholder={draft.address || "same as the address"} onChange={(e) => set({ username: e.target.value.trim() })} />
+      </Field>
+      <Field label={bot.email ? "Password (leave empty to keep the saved one)" : "Password"}>
+        <input className="input" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+      </Field>
+      <div className="field-pair">
+        <Field label="IMAP server (TLS)">
+          <input className="input mono" value={draft.imapHost} placeholder="imap.example.com" onChange={(e) => set({ imapHost: e.target.value.trim() })} />
+        </Field>
+        <Field label="Port">
+          <input className="input" type="number" value={draft.imapPort} onChange={(e) => set({ imapPort: Number(e.target.value) || 993 })} />
+        </Field>
+      </div>
+      <div className="field-pair">
+        <Field label="SMTP server">
+          <input className="input mono" value={draft.smtpHost} placeholder="smtp.example.com" onChange={(e) => set({ smtpHost: e.target.value.trim() })} />
+        </Field>
+        <Field label="Port">
+          <input className="input" type="number" value={draft.smtpPort} onChange={(e) => set({ smtpPort: Number(e.target.value) || 465 })} />
+        </Field>
+      </div>
+      <div>
+        <Field label="Security">
+          <select className="select" value={draft.smtpSecurity} onChange={(e) => set({ smtpSecurity: e.target.value as BotEmail["smtpSecurity"] })}>
+            <option value="tls">TLS (465)</option>
+            <option value="starttls">STARTTLS (587)</option>
+          </select>
+        </Field>
+      </div>
+      <div className="row wrap">
+        <Button
+          variant="primary"
+          disabled={!valid}
+          onClick={async () => {
+            if (password) await secrets.set(emailSecretKey(bot.id), password);
+            await saveBot({ ...bot, email: { ...draft, username: draft.username || draft.address } });
+            setPassword("");
+            toast(`${bot.name}'s inbox is saved.`, "success");
+          }}
+        >
+          Save inbox
+        </Button>
+        <Button
+          disabled={!bot.email || testing}
+          onClick={async () => {
+            setTesting(true);
+            try {
+              const r = await hubMail.list(await mailAccount(bot), { limit: 1 });
+              toast(`Connected: ${r.total} messages in the inbox.`, "success");
+            } catch (e) {
+              toast((e as Error).message, "error");
+            } finally {
+              setTesting(false);
+            }
+          }}
+        >
+          {testing ? "Checking…" : "Test the inbox"}
+        </Button>
+        {bot.email && (
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              await secrets.delete(emailSecretKey(bot.id));
+              await saveBot({ ...bot, email: undefined });
+              setDraft(blank);
+            }}
+          >
+            Remove inbox
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

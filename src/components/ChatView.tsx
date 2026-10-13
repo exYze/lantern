@@ -1,8 +1,8 @@
-import { ArrowRight, ChevronLeft, MessageSquarePlus, PanelRightOpen, ShieldCheck } from "lucide-react";
+import { ArrowRight, ChevronLeft, MessageSquarePlus, PanelRightOpen, Server, ShieldCheck, Users } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { sendUserMessage, stopRun } from "../lib/agent";
 import { capabilities } from "../lib/platform";
-import { createConversation, loadMessages, saveBot, setView, updateConversation, useApp } from "../lib/store";
+import { createConversation, isBusy, loadMessages, openConversation, saveBot, setView, updateConversation, useApp } from "../lib/store";
 import { TEMPLATES } from "../lib/templates";
 import type { ApprovalMode, Attachment, Bot } from "../lib/types";
 import { Avatar } from "./Avatar";
@@ -29,7 +29,9 @@ export function ChatView() {
   const convId = useApp((s) => s.activeConversationId);
   const conv = useApp((s) => s.conversations.find((c) => c.id === s.activeConversationId));
   const messages = useApp((s) => (convId ? s.messages[convId] : undefined));
-  const running = useApp((s) => (convId ? !!s.running[convId] : false));
+  const running = useApp((s) => (convId ? isBusy(s, convId) : false));
+  const onHub = useApp((s) => !!convId && !s.running[convId] && isBusy(s, convId));
+  const asker = useApp((s) => (conv?.from ? s.bots.find((b) => b.id === conv.from!.botId) : undefined));
   const globalMode = useApp((s) => s.settings.approvalMode);
   const defaultModel = useApp((s) => s.settings.defaultModel);
   const [seed, setSeed] = useState<{ text: string; n: number }>();
@@ -172,6 +174,19 @@ export function ChatView() {
       </div>
 
       <div className="composer-wrap">
+        {conv?.from && (
+          <div className="chat-origin small">
+            <Users size={14} /> {asker?.name ?? "Another bot"} started this chat to ask {bot.name} for help.{" "}
+            <button className="link" onClick={() => openConversation(conv.from!.conversationId)}>
+              Open {asker?.name ?? "its"} chat
+            </button>
+          </div>
+        )}
+        {onHub && (
+          <div className="chat-origin small">
+            <Server size={14} /> {bot.name} is working on your hub. You can close Lantern; the reply will be here when you're back.
+          </div>
+        )}
         <Composer
           placeholder={`Message ${bot.name}…`}
           running={running}

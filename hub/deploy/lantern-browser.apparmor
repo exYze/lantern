@@ -1,0 +1,10 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Bots' headless browser keeps Chrome's own sandbox, which needs user namespaces.
+# Ubuntu 23.10+ only allows those to programs with a profile like this one.
+profile lantern-browser /opt/lantern/browsers/**/{chrome-headless-shell,headless_shell} flags=(unconfined) {
+  userns,
+
+  include if exists <local/lantern-browser>
+}

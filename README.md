@@ -24,17 +24,21 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 | 🤖 **Bots** | Name, tagline, instructions, a generated character avatar (shape, color, eyes, mouth, badge), per-bot model and temperature |
 | 🧩 **Templates** | 12 ready-made bots: research scout, code pilot, morning brief, writing partner, data wrangler, sysadmin sidekick, study coach, planner… |
 | 💬 **Chat** | Streaming replies, reasoning ("thinking") display, Markdown, syntax-highlighted code, KaTeX math, Mermaid diagrams, image + text attachments, edit & resend, regenerate |
-| 🛠️ **Tools** | Files (read / write / edit / find / grep / delete), terminal (desktop), web search & fetch, memory, skills, routines, chat-history search |
+| 🛠️ **Tools** | Files (read / write / edit / find / grep / delete), terminal (desktop), web search & fetch (optionally through your own Firecrawl, with site maps and crawls), memory, skills, routines, chat-history search |
 | 👥 **Subagents** | A bot hands self-contained tasks to helpers that work on their own and report back, several in parallel; isolated ones get a folder (and on the hub, a sandbox) of their own |
+| 🤝 **Bots working together** | A bot asks another for help or hands it a whole task; a primary bot coordinates the rest and checks in each morning with work it could take off your plate |
+| 🌐 **Browser** | On the hub, each bot has its own headless browser for sites that need clicking or signing in; watch it live and take over from any device |
+| ✉️ **Email** | Give a bot its own inbox (IMAP/SMTP): it reads and answers mail, and new mail can start a routine |
+| 📲 **Telegram & push** | Talk to your bots from Telegram (text, photos, voice notes, approval buttons); phone notifications through ntfy |
 | 🔌 **Plugins (MCP)** | Model Context Protocol servers over stdio (desktop) or Streamable HTTP; secrets for env vars and headers |
 | 🛡️ **Approvals** | *Ask first*, *Auto-review* (an LLM judges each action) or *Auto-approve*, plus allow/deny rules ("Always allow `git status`") |
 | 🧠 **Memories** | Bots remember facts you tell them; view and delete them any time |
 | 📚 **Skills** | Reusable instruction packs; private per bot or shared; import `SKILL.md` files |
-| ⏰ **Routines** | "Every weekday at 8:00, brief me on…": daily, weekdays, weekly, interval or one-off |
+| ⏰ **Routines** | "Every weekday at 8:00, brief me on…": on a schedule, when a webhook is called (GitHub, Home Assistant, a script), or when mail arrives |
 | 🔑 **Secrets** | Write-only credentials exposed to terminal commands as env vars, redacted from tool output |
 | 🎙️ **Voice memos** | Transcribed by any OpenAI-compatible speech-to-text server (Speaches/faster-whisper, LocalAI…) |
 | 🔒 **Private** | Local SQLite database; secrets in the OS keychain on Windows, macOS and iOS |
-| 🔄 **Lantern Hub** | Optional self-hosted server: every device shares the same bots, chats, memories, settings and secrets, plus one workspace where bots' files and terminal live ([docs/HUB.md](docs/HUB.md)) |
+| 🔄 **Lantern Hub** | Optional self-hosted server: every device shares the same bots, chats, memories, settings and secrets, plus one workspace where bots' files and terminal live. Its runner does the bots' work, so a task keeps going after you close the app and routines run with every app closed ([docs/HUB.md](docs/HUB.md)) |
 | 📦 **Sandboxes** | On the hub, a bot can keep its files and commands in its own bubblewrap sandbox, with or without internet access |
 | ⬆️ **Updates** | Desktop apps update themselves from your hub (signed installers). Android installs updates in-app, and without a prompt once Lantern has updated itself once |
 
@@ -171,6 +175,14 @@ hub/                     Lantern Hub: sync API, shared workspace, downloads and 
 src/lib/sync.ts          local-first sync with the hub (outbox, live events, merge)
 src/lib/hub.ts           hub pairing, API and remote tools
 src/lib/subagents.ts     subagents (delegate_task): parallel helpers, isolated folders and sandboxes
+src/lib/team.ts          bots asking bots (ask_bot), hand-offs
+src/lib/remote.ts        handing chats to the hub's runner; live replies
+src/lib/browser.ts       the browser tool (DevTools commands to the hub's headless Chrome)
+src/runner/              the runner: the same bot code, headless on the hub (Node), plus Telegram,
+                         ntfy pushes and email triggers
+hub/src/browser.rs       one headless Chrome per bot, over a private DevTools pipe
+hub/src/mail.rs          bots' inboxes (IMAP/SMTP over verified TLS)
+hub/src/hooks.rs         webhooks that start routines (key + optional signatures)
 ```
 
 ## Design

@@ -28,3 +28,6 @@ GROK_BOT_REPORT.md
 .env.local
 .env.*.local
 *.local
+
+# Hub runner bundle (npm run build:runner)
+/dist-runner

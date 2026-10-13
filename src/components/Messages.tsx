@@ -1,4 +1,6 @@
 import {
+  AppWindow,
+  ArrowUpRight,
   Bot as BotIcon,
   Brain,
   Check,
@@ -9,21 +11,26 @@ import {
   FileText,
   Globe,
   LoaderCircle,
+  Mail,
   Pencil,
   Plug,
   RotateCcw,
+  Send,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
   Terminal,
+  Users,
+  Webhook,
   Wrench,
   X,
 } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
 import { editAndResend, regenerate } from "../lib/agent";
 import { rulePatternForCommand } from "../lib/approval";
-import { answerApproval, isAwaitingApproval, useApp } from "../lib/store";
+import { answerApproval, canAnswerApproval, isBusy, openConversation, useApp } from "../lib/store";
 import { DELEGATE_TOOL } from "../lib/subagents";
+import { ASK_BOT_TOOL } from "../lib/team";
 import { BUILTIN_TOOLS } from "../lib/tools";
 import type { Bot, ChatMessage, SubagentRun, ToolCall } from "../lib/types";
 import { Avatar } from "./Avatar";
@@ -42,6 +49,7 @@ function parseArgs(json: string): Record<string, unknown> {
 export function describeToolCall(call: ToolCall): { title: string; icon: ReactNode } {
   const args = parseArgs(call.arguments);
   if (call.name === DELEGATE_TOOL.name) return { title: call.subagent?.title ? `Subagent: ${call.subagent.title}` : DELEGATE_TOOL.summarize(args), icon: <BotIcon size={15} /> };
+  if (call.name === ASK_BOT_TOOL.name) return { title: ASK_BOT_TOOL.summarize(args), icon: <Users size={15} /> };
   const builtin = BUILTIN_TOOLS.find((t) => t.name === call.name);
   const iconFor: Record<string, ReactNode> = {
     files: <FileText size={15} />,
@@ -51,6 +59,8 @@ export function describeToolCall(call: ToolCall): { title: string; icon: ReactNo
     skills: <Sparkles size={15} />,
     routines: <Clock size={15} />,
     conversationSearch: <Wrench size={15} />,
+    browser: <AppWindow size={15} />,
+    email: <Mail size={15} />,
   };
   if (builtin) {
     let title = call.name.replace(/_/g, " ");
@@ -103,13 +113,40 @@ const APPROVAL_NOTE: Record<NonNullable<ToolCall["approval"]>, string> = {
   "read-only": "Read-only",
 };
 
-function ToolCallCard({ call, botName }: { call: ToolCall; botName: string }) {
-  const awaiting = call.status === "awaiting-approval" && isAwaitingApproval(call.id);
+function EmailDraft({ args }: { args: Record<string, unknown> }) {
+  const list = (v: unknown) => (Array.isArray(v) ? v.join(", ") : String(v ?? ""));
+  return (
+    <div className="approval-draft">
+      <div>
+        <span className="muted">To</span> {list(args.to)}
+      </div>
+      {!!list(args.cc) && (
+        <div>
+          <span className="muted">Cc</span> {list(args.cc)}
+        </div>
+      )}
+      <div>
+        <span className="muted">Subject</span> {String(args.subject ?? "")}
+      </div>
+      <pre>{String(args.body ?? "")}</pre>
+    </div>
+  );
+}
+
+function ToolCallCard({ call, botName, conversationId }: { call: ToolCall; botName: string; conversationId: string }) {
+  useApp((s) => s.remoteRuns[conversationId]);
+  const awaiting = call.status === "awaiting-approval" && canAnswerApproval(conversationId, call.id);
   const [open, setOpen] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
   const { title, icon } = describeToolCall(call);
   const args = parseArgs(call.arguments);
   const isShell = call.name === "shell";
   const pattern = isShell ? rulePatternForCommand(String(args.command ?? "")) : "";
+  const answer = (a: "allow" | "always" | "deny") => {
+    setSent(a);
+    answerApproval(call.id, a, conversationId);
+  };
+  const asked = useApp((s) => (call.asked ? s.bots.find((b) => b.id === call.asked!.botId) : undefined));
 
   return (
     <div className={`toolcard status-${call.status}${awaiting ? " awaiting" : ""}`}>
@@ -132,22 +169,38 @@ function ToolCallCard({ call, botName }: { call: ToolCall; botName: string }) {
               {call.review && <div className="approval-review">Auto-review: {call.review.reason}</div>}
             </div>
             {isShell && <pre className="approval-cmd">{String(args.command ?? "")}</pre>}
-            <div className="approval-actions">
-              <Button variant="primary" size="sm" onClick={() => answerApproval(call.id, "allow")}>
-                Allow once
-              </Button>
-              <Button size="sm" onClick={() => answerApproval(call.id, "always")}>
-                {isShell && pattern ? `Always allow “${pattern}”` : "Always allow"}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => answerApproval(call.id, "deny")}>
-                Deny
-              </Button>
-            </div>
+            {call.name === "email_send" && <EmailDraft args={args} />}
+            {sent ? (
+              <div className="approval-sent muted small">{sent === "deny" ? "Denied." : "Allowed."} Waiting for the hub…</div>
+            ) : (
+              <div className="approval-actions">
+                <Button variant="primary" size="sm" onClick={() => answer("allow")}>
+                  Allow once
+                </Button>
+                <Button size="sm" onClick={() => answer("always")}>
+                  {isShell && pattern ? `Always allow “${pattern}”` : "Always allow"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => answer("deny")}>
+                  Deny
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {call.subagent && <SubagentPanel run={call.subagent} active={call.status === "running"} botName={botName} />}
+      {call.asked && (
+        <button className="toolcard-link" onClick={() => openConversation(call.asked!.conversationId)}>
+          Open {asked?.name ?? "the other bot"}'s chat <ArrowUpRight size={13} />
+        </button>
+      )}
+      {call.name === "browser" && call.status !== "awaiting-approval" && (
+        <button className="toolcard-link" onClick={() => useApp.setState({ detailsOpen: true, detailsTab: "browser" })}>
+          Watch the browser <ArrowUpRight size={13} />
+        </button>
+      )}
+
+      {call.subagent && <SubagentPanel run={call.subagent} active={call.status === "running"} botName={botName} conversationId={conversationId} />}
 
       {open && (
         <div className="toolcard-body">
@@ -170,9 +223,9 @@ function ToolCallCard({ call, botName }: { call: ToolCall; botName: string }) {
 }
 
 /** A subagent's work inside its delegate_task card: live while it runs, folded away after. */
-function SubagentPanel({ run, active, botName }: { run: SubagentRun; active: boolean; botName: string }) {
+function SubagentPanel({ run, active, botName, conversationId }: { run: SubagentRun; active: boolean; botName: string; conversationId: string }) {
   const [open, setOpen] = useState(false);
-  const needsYou = run.steps.some((s) => s.toolCalls?.some((c) => c.status === "awaiting-approval" && isAwaitingApproval(c.id)));
+  const needsYou = run.steps.some((s) => s.toolCalls?.some((c) => c.status === "awaiting-approval" && canAnswerApproval(conversationId, c.id)));
   const actions = run.steps.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0);
   const expanded = active || needsYou || open;
   return (
@@ -195,7 +248,7 @@ function SubagentPanel({ run, active, botName }: { run: SubagentRun; active: boo
               {step.content.trim() && <div className="subagent-text">{step.content.length > 1200 ? `${step.content.slice(0, 1200)}…` : step.content}</div>}
               {step.status === "streaming" && !step.content && <div className="subagent-text muted">Thinking…</div>}
               {step.status === "error" && <div className="subagent-text bad">This step failed.</div>}
-              {step.toolCalls?.map((c) => <ToolCallCard key={c.id} call={c} botName={`${botName}'s subagent`} />)}
+              {step.toolCalls?.map((c) => <ToolCallCard key={c.id} call={c} botName={`${botName}'s subagent`} conversationId={conversationId} />)}
             </div>
           ))}
         </div>
@@ -218,10 +271,30 @@ function Reasoning({ text, streaming }: { text: string; streaming: boolean }) {
   );
 }
 
+/** A message another bot wrote into this chat (a question for this bot, or a handed-off result). */
+function BotNote({ msg }: { msg: ChatMessage }) {
+  const from = useApp((s) => s.bots.find((b) => b.id === msg.fromBotId));
+  return (
+    <div className="msg msg-note-bot">
+      {from ? <Avatar spec={from.avatar} size={26} /> : <BotIcon size={18} />}
+      <div className="msg-main">
+        <div className="stamp muted">{from?.name ?? "Another bot"}</div>
+        <Markdown text={msg.content} />
+      </div>
+    </div>
+  );
+}
+
+const VIA_LABEL: Record<NonNullable<ChatMessage["via"]>, { label: string; icon: ReactNode }> = {
+  telegram: { label: "From Telegram", icon: <Send size={12} /> },
+  webhook: { label: "From a webhook", icon: <Webhook size={12} /> },
+  email: { label: "From an email", icon: <Mail size={12} /> },
+};
+
 function UserMessage({ msg }: { msg: ChatMessage }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(msg.content);
-  const running = useApp((s) => !!s.running[msg.conversationId]);
+  const running = useApp((s) => isBusy(s, msg.conversationId));
   if (editing) {
     return (
       <div className="msg msg-user">
@@ -262,6 +335,11 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
         {msg.routineId ? <Markdown text={msg.content} /> : <div className="user-text">{msg.content}</div>}
       </div>
       <div className="msg-actions">
+        {msg.via && (
+          <span className="msg-via">
+            {VIA_LABEL[msg.via].icon} {VIA_LABEL[msg.via].label}
+          </span>
+        )}
         <CopyButton text={msg.content} />
         {!running && (
           <IconButton label="Edit and resend" onClick={() => setEditing(true)}>
@@ -274,7 +352,7 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
 }
 
 function AssistantMessage({ msg, bot, isLast, continued }: { msg: ChatMessage; bot: Bot; isLast: boolean; continued: boolean }) {
-  const running = useApp((s) => !!s.running[msg.conversationId]);
+  const running = useApp((s) => isBusy(s, msg.conversationId));
   const streaming = msg.status === "streaming";
   const empty = !msg.content && !msg.toolCalls?.length && !msg.error;
   return (
@@ -288,7 +366,7 @@ function AssistantMessage({ msg, bot, isLast, continued }: { msg: ChatMessage; b
           </div>
         )}
         {msg.content && <Markdown text={msg.content} />}
-        {msg.toolCalls?.map((c) => <ToolCallCard key={c.id} call={c} botName={bot.name} />)}
+        {msg.toolCalls?.map((c) => <ToolCallCard key={c.id} call={c} botName={bot.name} conversationId={msg.conversationId} />)}
         {msg.status === "error" && (
           <div className="msg-error">
             <CircleAlert size={16} />
@@ -321,6 +399,7 @@ function AssistantMessage({ msg, bot, isLast, continued }: { msg: ChatMessage; b
 
 export const MessageItem = memo(function MessageItem({ msg, bot, isLast, continued = false }: { msg: ChatMessage; bot: Bot; isLast: boolean; continued?: boolean }) {
   if (msg.role === "tool") return null;
+  if (msg.role === "user" && msg.fromBotId) return <BotNote msg={msg} />;
   if (msg.role === "user") return <UserMessage msg={msg} />;
   return <AssistantMessage msg={msg} bot={bot} isLast={isLast} continued={continued} />;
 });

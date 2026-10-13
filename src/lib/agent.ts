@@ -4,8 +4,10 @@
 import { decide, parseReview, REVIEW_SYSTEM_PROMPT, rulePatternForCommand } from "./approval";
 import { hubConnection, hubToolInfo, usesHub, type HubSandbox, type HubToolInfo } from "./hub";
 import { chatCompletion, complete, LlmError, type OAContentPart, type OAMessage, type OATool } from "./llm";
+import { emitAgentEvent, type RunOutcome } from "./events";
 import { getMcpClient, mcpToolName } from "./mcp";
-import { capabilities, notify, platform, secrets } from "./platform";
+import { appVisible, capabilities, isRunner, notify, platform, secrets } from "./platform";
+import { requestRun, requestStop, runningOnHub, runsOnHub } from "./remote";
 import { chime } from "./sound";
 import {
   addApprovalRule,
@@ -24,6 +26,7 @@ import {
   workspaceFor,
 } from "./store";
 import { DELEGATE_TOOL, MAX_PARALLEL_SUBAGENTS } from "./subagents";
+import { ASK_BOT_TOOL, teamFor } from "./team";
 import { builtinToolsFor, platformLabel, riskOf, skillsForBot, toolEnabled, type ToolContext, type ToolDef } from "./tools";
 import type { Attachment, Bot, ChatMessage, Provider, ToolCall } from "./types";
 import { clip, safeJson, uid } from "./util";
@@ -32,7 +35,9 @@ const controllers = new Map<string, AbortController>();
 const MAX_TOOL_RESULT_CHARS = 30_000;
 
 export function stopRun(conversationId: string) {
-  controllers.get(conversationId)?.abort();
+  const local = controllers.get(conversationId);
+  if (local) local.abort();
+  else if (runningOnHub(conversationId)) void requestStop(conversationId);
 }
 
 function isAbort(e: unknown, signal?: AbortSignal): boolean {
@@ -113,6 +118,7 @@ export function placeTools(bot: Bot, remote: boolean, hubInfo: HubToolInfo | und
 export async function toolsFor(bot: Bot, workspace: string, withhold: { files?: boolean; shell?: boolean } = {}): Promise<{ tools: ToolDef[]; mcpErrors: string[] }> {
   const tools = builtinToolsFor(bot).filter((t) => !(withhold.files && t.group === "files") && !(withhold.shell && t.group === "shell"));
   if (toolEnabled(bot, "subagents")) tools.push(DELEGATE_TOOL);
+  if (toolEnabled(bot, "bots") && teamFor(bot).length) tools.push(ASK_BOT_TOOL);
   const mcpErrors: string[] = [];
   const servers = useApp.getState().mcpServers.filter((s) => s.enabled && bot.mcpServerIds.includes(s.id));
   await Promise.all(
@@ -158,13 +164,33 @@ export function sandboxLine(sandbox: HubSandbox): string {
   return `- Commands run in a sandbox: only your workspace folder (and /tmp) can be written, the rest of the system is read-only, other files are hidden, and ${sandbox.network ? "the network is available" : "there is no network access"}.`;
 }
 
-export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean, workspace: string, mcpErrors: string[], hub?: HubToolInfo, place?: Pick<ToolPlace, "confine" | "sandbox" | "notes">): string {
-  const { memories } = useApp.getState();
+export function buildSystemPrompt(
+  bot: Bot,
+  tools: ToolDef[],
+  useTools: boolean,
+  workspace: string,
+  mcpErrors: string[],
+  hub?: HubToolInfo,
+  place?: Pick<ToolPlace, "confine" | "sandbox" | "notes">,
+  conversationId?: string,
+): string {
+  const { memories, settings, conversations, bots } = useApp.getState();
   const lines: string[] = [];
   lines.push(`You are ${bot.name}${bot.tagline ? ` — ${bot.tagline}` : ""}.`);
   if (bot.instructions.trim()) lines.push("", bot.instructions.trim());
 
-  lines.push("", "# Environment", nowLine(), `- You are running in the Lantern app on ${platformLabel()}${platform.mobile ? " (mobile)" : ""}.`);
+  lines.push(
+    "",
+    "# Environment",
+    nowLine(),
+    isRunner()
+      ? "- You are running on the user's Lantern Hub, a server that's always on. The user may be chatting from their phone, a computer or Telegram, or may be away while you work."
+      : `- You are running in the Lantern app on ${platformLabel()}${platform.mobile ? " (mobile)" : ""}.`,
+  );
+  const conv = conversationId ? conversations.find((c) => c.id === conversationId) : undefined;
+  const asker = conv?.from ? bots.find((b) => b.id === conv.from!.botId) : undefined;
+  if (asker) lines.push(`- This chat was started by ${asker.name}, another of the user's bots, which needs your help. Answer ${asker.name} directly and completely; the user can read along.`);
+  if (conv?.channel?.kind === "telegram") lines.push("- This chat is in Telegram, so keep formatting simple: short paragraphs and plain lists, no tables or diagrams.");
   const names = new Set(tools.map((t) => t.name));
   const usesFiles = useTools && (names.has("read_file") || names.has("shell"));
   if (usesFiles && hub) {
@@ -178,6 +204,9 @@ export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean,
   for (const note of place?.notes ?? []) lines.push(`- ${note}`);
   if (useTools && names.has(DELEGATE_TOOL.name)) {
     lines.push("- You can hand self-contained tasks to subagents with `delegate_task`; several calls in one turn run in parallel.");
+  }
+  if (useTools && names.has("browser")) {
+    lines.push("- You have a web browser on the hub (`browser`) for sites that need clicking, signing in or JavaScript. The user can watch it and take over. Prefer `web_fetch` when reading a page is enough.");
   }
   if (useTools && bot.secretNames.length) {
     lines.push(`- Secrets available to shell commands as environment variables: ${bot.secretNames.map((n) => "$" + n).join(", ")}. Never print their values.`);
@@ -194,6 +223,15 @@ export function buildSystemPrompt(bot: Bot, tools: ToolDef[], useTools: boolean,
       lines.push("(none yet)");
     }
     if (useTools) lines.push("Use `remember` to save durable facts or preferences the user shares, and `forget` to remove outdated ones.");
+  }
+
+  const team = teamFor(bot);
+  if (useTools && names.has(ASK_BOT_TOOL.name) && team.length) {
+    lines.push("", "# Your team", "The user's other bots. Ask one with `ask_bot` when its skills fit the task (it answers you), or hand it a whole task with `wait: false`.");
+    for (const b of team) lines.push(`- ${b.name}${b.tagline ? `: ${b.tagline}` : ""}`);
+    if (settings.primaryBotId === bot.id) {
+      lines.push("You are the user's primary bot: their main point of contact. Coordinate the others, and hand work to the one best suited to it.");
+    }
   }
 
   const skills = skillsForBot(bot);
@@ -292,13 +330,22 @@ export function toOpenAIHistory(messages: ChatMessage[], budgetTokens: number, u
 
 // ------------------------------------------------------------------ running
 
-export async function sendUserMessage(conversationId: string, text: string, attachments: Attachment[] = [], opts: { routineId?: string } = {}) {
-  const msg: ChatMessage = { id: uid("msg"), conversationId, role: "user", content: text, attachments: attachments.length ? attachments : undefined, createdAt: Date.now(), routineId: opts.routineId };
+export async function sendUserMessage(conversationId: string, text: string, attachments: Attachment[] = [], opts: { routineId?: string; via?: ChatMessage["via"] } = {}) {
+  const msg: ChatMessage = {
+    id: uid("msg"),
+    conversationId,
+    role: "user",
+    content: text,
+    attachments: attachments.length ? attachments : undefined,
+    createdAt: Date.now(),
+    routineId: opts.routineId,
+    via: opts.via,
+  };
   await loadMessages(conversationId);
   await appendMessage(msg);
   const conv = useApp.getState().conversations.find((c) => c.id === conversationId);
   await updateConversation(conversationId, conv?.title === "New chat" ? { title: makeTitle(text) } : {});
-  return runAgent(conversationId, opts);
+  return runAgent(conversationId, { routineId: opts.routineId });
 }
 
 /** Drops an assistant reply (and everything after it) and asks again. */
@@ -318,16 +365,34 @@ export async function editAndResend(conversationId: string, userMessageId: strin
   return sendUserMessage(conversationId, text, original?.attachments ?? []);
 }
 
-export type RunOutcome = "ok" | "error" | "stopped";
+export type { RunOutcome };
 
-export async function runAgent(conversationId: string, opts: { routineId?: string } = {}): Promise<RunOutcome> {
+export interface RunOptions {
+  routineId?: string;
+  /** Bots that asked for this run through ask_bot, outermost first (stops loops). */
+  chain?: string[];
+  /** Run on this device even if the hub's runner would take it (ask_bot runs beside its caller). */
+  here?: boolean;
+}
+
+export async function runAgent(conversationId: string, opts: RunOptions = {}): Promise<RunOutcome> {
   if (controllers.has(conversationId)) return "error";
+  if (!isRunner() && !opts.here) {
+    // While the hub's runner is online, it does the work and this device watches.
+    const st = useApp.getState();
+    const target = st.bots.find((b) => b.id === st.conversations.find((c) => c.id === conversationId)?.botId);
+    if (target && runsOnHub(target)) {
+      await requestRun(conversationId);
+      return "ok";
+    }
+  }
   const abort = new AbortController();
   controllers.set(conversationId, abort);
   setRunning(conversationId, true);
   let current: string | null = null;
   let outcome: RunOutcome = "ok";
   let bot: Bot | undefined;
+  const startedAt = Date.now();
 
   try {
     await loadMessages(conversationId);
@@ -335,6 +400,7 @@ export async function runAgent(conversationId: string, opts: { routineId?: strin
     const conv = state.conversations.find((c) => c.id === conversationId);
     bot = state.bots.find((b) => b.id === conv?.botId);
     if (!bot) throw new Error("This conversation's bot no longer exists.");
+    emitAgentEvent({ type: "run-start", conversationId, botId: bot.id });
     const remote = usesHub(bot);
     let hubInfo: HubToolInfo | undefined;
     if (remote) {
@@ -347,14 +413,14 @@ export async function runAgent(conversationId: string, opts: { routineId?: strin
     const secretValues = Object.values(env).filter((v) => v.length >= 4);
     const { provider: initialProvider, model } = resolveModel(bot);
     const { tools, mcpErrors } = await toolsFor(bot, workspace, { files: place.noFiles, shell: place.noShell });
-    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal, remote, confine: place.confine, sandbox: place.sandbox, tools };
+    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal, remote, confine: place.confine, sandbox: place.sandbox, tools, chain: [...(opts.chain ?? []), bot.id] };
     const settings = useApp.getState().settings;
 
     for (let step = 0; step < settings.maxSteps; step++) {
       if (abort.signal.aborted) break;
       const provider = useApp.getState().providers.find((p) => p.id === initialProvider.id) ?? initialProvider;
       const useTools = tools.length > 0 && !(provider.noToolModels ?? []).includes(model);
-      const system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo, place);
+      const system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo, place, conversationId);
       const history = toOpenAIHistory(messagesOf(conversationId), Math.max(2000, settings.contextTokens - estimateTokens(system) - 1500), useTools);
 
       const assistant: ChatMessage = { id: uid("msg"), conversationId, role: "assistant", content: "", status: "streaming", model, createdAt: Date.now(), routineId: opts.routineId };
@@ -453,12 +519,20 @@ export async function runAgent(conversationId: string, opts: { routineId?: strin
   }
 
   const s = useApp.getState().settings;
-  if (bot && (document.hidden || opts.routineId) && outcome !== "stopped") {
+  if (bot && (!appVisible() || opts.routineId) && outcome !== "stopped" && !opts.chain?.length) {
     const last = [...messagesOf(conversationId)].reverse().find((m) => m.role === "assistant");
-    if (s.notifications) void notify(bot.name, (last?.error ? `Error: ${last.error}` : last?.content || "Finished").slice(0, 160));
-    if (s.sound) chime();
+    const routine = opts.routineId ? useApp.getState().routines.find((r) => r.id === opts.routineId) : undefined;
+    const quiet = routine?.quiet && !last?.error && isNothingNew(last?.content ?? "");
+    if (s.notifications && !quiet) void notify(bot.name, (last?.error ? `Error: ${last.error}` : last?.content || "Finished").slice(0, 160));
+    if (s.sound && !isRunner()) chime();
   }
+  if (bot) emitAgentEvent({ type: "run-end", conversationId, botId: bot.id, outcome, routineId: opts.routineId, startedAt });
   return outcome;
+}
+
+/** A check-in that found nothing to raise answers just this, and stays quiet. */
+export function isNothingNew(text: string): boolean {
+  return /^\W*nothing new\W*$/i.test(text.trim());
 }
 
 export interface CallEnv {
@@ -561,8 +635,11 @@ export async function executeToolCall(
     status = "denied";
   } else {
     if (decision.action === "ask") {
-      update({ status: "awaiting-approval" });
-      if (env.routineId || document.hidden) void notify(`${bot.name} needs your approval`, tool!.summarize(args).slice(0, 160));
+      // Stored, so other devices (and the hub's runner) see that it's waiting.
+      update({ status: "awaiting-approval" }, true);
+      const summary = tool!.summarize(args).slice(0, 160);
+      if (env.routineId || !appVisible()) void notify(`${bot.name} needs your approval`, summary);
+      emitAgentEvent({ type: "approval", conversationId: ctx.conversationId, botId: bot.id, callId: call.id, summary });
       const answer = await waitForApproval(call.id, signal);
       if (answer === "deny") {
         result = signal.aborted ? "Cancelled." : "The user declined this action. Don't retry it; ask them or choose another approach.";

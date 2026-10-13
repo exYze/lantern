@@ -36,12 +36,21 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: hub
+      # The runner (bots that keep working with every app closed) ships with the hub.
+      - name: Build the runner
+        run: |
+          npm ci
+          npm run build:runner
       - name: Build static Linux binaries (x86_64, arm64)
         run: |
           pip install ziglang cargo-zigbuild
@@ -49,7 +58,7 @@ jobs:
           for t in x86_64 aarch64; do
             cargo zigbuild --release --target $t-unknown-linux-musl
             mkdir -p ../dist-hub/lantern-hub-$t
-            cp target/$t-unknown-linux-musl/release/lantern-hub deploy/* ../dist-hub/lantern-hub-$t/
+            cp target/$t-unknown-linux-musl/release/lantern-hub deploy/* ../dist-runner/lantern-runner.mjs ../dist-hub/lantern-hub-$t/
           done
       - uses: actions/upload-artifact@v4
         with:

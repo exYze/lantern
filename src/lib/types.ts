@@ -50,6 +50,26 @@ export interface BotToolToggles {
   conversationSearch: boolean;
   /** Hand tasks to subagents (missing on bots created before 0.3: on). */
   subagents?: boolean;
+  /** Ask the user's other bots for help, or hand work to them (0.5). */
+  bots?: boolean;
+  /** Drive a web browser on the hub (0.5). */
+  browser?: boolean;
+  /** Read and send mail from the bot's own inbox, when it has one (0.5). */
+  email?: boolean;
+}
+
+/** A mailbox of the bot's own. The password lives in the secret store under `email:<botId>`. */
+export interface BotEmail {
+  address: string;
+  username: string;
+  imapHost: string;
+  imapPort: number;
+  /** IMAP is TLS unless the server is on the hub itself (a local bridge), where "none" is allowed. */
+  imapSecurity?: "tls" | "none";
+  smtpHost: string;
+  smtpPort: number;
+  /** "tls" connects with TLS; "starttls" upgrades a plain connection (SMTP on 587); "none" only on the hub itself. */
+  smtpSecurity: "tls" | "starttls" | "none";
 }
 
 /** Runs a bot's files and commands in its own sandbox folder on the hub. */
@@ -81,6 +101,8 @@ export interface Bot {
   computer?: Computer;
   /** On the hub: keep this bot's files and commands in its own sandbox (bubblewrap). */
   sandbox?: BotSandbox;
+  /** Its own email inbox. */
+  email?: BotEmail;
   templateId?: string;
   pinned?: boolean;
   createdAt: number;
@@ -92,8 +114,53 @@ export interface Conversation {
   botId: ID;
   title: string;
   routineId?: ID;
+  /** Started by another bot (ask_bot): who asked, and from which chat. */
+  from?: { botId: ID; conversationId: ID };
+  /** Where the chat happens besides the app (a Telegram chat id). */
+  channel?: { kind: "telegram"; chatId: number };
   createdAt: number;
   updatedAt: number;
+}
+
+/** A device asking the hub's runner to do something. Synced; the runner deletes it once handled. */
+export interface RunnerRequest {
+  id: ID;
+  kind: "run" | "stop" | "approve" | "routine";
+  conversationId?: ID;
+  toolCallId?: string;
+  answer?: "allow" | "always" | "deny";
+  routineId?: ID;
+  deviceId?: string;
+  at: number;
+}
+
+/** A bot run in progress on the hub's runner. Written only by the runner; id = conversation id. */
+export interface RunDoc {
+  id: ID;
+  conversationId: ID;
+  botId: ID;
+  startedAt: number;
+}
+
+/** Something that starts a routine: a webhook call or an email. Written by the hub or the runner. */
+export interface TriggerEvent {
+  id: ID;
+  routineId: ID;
+  source: "webhook" | "email";
+  receivedAt: number;
+  /** Webhooks: the request's interesting headers, query string and body. */
+  headers?: Record<string, string>;
+  query?: string;
+  body?: string;
+  /** Email: who sent it, the subject and the text. */
+  email?: { uid: number; from: string; subject: string; date?: string; text: string };
+}
+
+/** What the hub says about its runner, the always-on service that runs bots there. */
+export interface RunnerStatus {
+  online: boolean;
+  version?: string;
+  lastSeen?: number;
 }
 
 export interface Attachment {
@@ -129,6 +196,8 @@ export interface ToolCall {
   finishedAt?: number;
   /** delegate_task: what the subagent is doing / did. */
   subagent?: SubagentRun;
+  /** ask_bot: the bot that was asked and the chat it works in. */
+  asked?: { botId: ID; conversationId: ID };
 }
 
 export interface SubagentStep {
@@ -162,6 +231,10 @@ export interface ChatMessage {
   /** For role=tool: the call this result answers. */
   toolCallId?: string;
   toolName?: string;
+  /** role=user written by another bot (ask_bot) rather than the user. */
+  fromBotId?: ID;
+  /** role=user that arrived from outside the app. */
+  via?: "telegram" | "webhook" | "email";
   status?: "streaming" | "done" | "error" | "stopped";
   error?: string;
   model?: string;
@@ -212,12 +285,24 @@ export type Schedule =
   | { kind: "interval"; minutes: number }
   | { kind: "once"; at: number };
 
+/** What starts a routine. Routines from before 0.5 have no trigger and run on their schedule. */
+export type RoutineTrigger =
+  | { kind: "schedule" }
+  /** A POST to the hub's /hooks/<routine id>/<key>. A signing secret, if any, is the secret `routine:<id>:signing`. */
+  | { kind: "webhook"; key: string }
+  /** New mail in the bot's inbox; `lastUid` is the newest message already handled. */
+  | { kind: "email"; lastUid?: number };
+
 export interface Routine {
   id: ID;
   botId: ID;
   name: string;
   prompt: string;
+  /** Used when the trigger is a schedule (or missing). */
   schedule: Schedule;
+  trigger?: RoutineTrigger;
+  /** Don't notify when the bot answers just "Nothing new" (check-ins). */
+  quiet?: boolean;
   enabled: boolean;
   lastRunAt?: number;
   nextRunAt?: number;
@@ -256,7 +341,29 @@ export interface Settings {
   computer?: Computer;
   /** This device only: install app updates automatically (default on). */
   autoUpdate?: boolean;
+  /** Where bots work while the hub's runner is online: on the hub (default) or on the device you chat from. */
+  runOn?: "hub" | "device";
+  /** The bot that coordinates the others and checks in. */
+  primaryBotId?: ID;
+  /** A self-hosted Firecrawl server for search and reading pages. */
+  firecrawl?: { url: string; search: boolean; read: boolean };
+  /** Phone notifications through an ntfy server. An access token, if any, is the secret `push:ntfy`. */
+  push?: { server: string; topic: string; hideText?: boolean };
+  /** Chat with bots from Telegram. The bot token is the secret `telegram:token`. */
+  telegram?: TelegramSettings;
   onboarded: boolean;
+}
+
+export interface TelegramSettings {
+  enabled: boolean;
+  /** The Telegram bot's @username, filled in by the runner. */
+  username?: string;
+  /** The Lantern bot that answers new Telegram chats. */
+  botId?: ID;
+  /** Send `/link <code>` from Telegram to connect a chat. */
+  linkCode?: string;
+  /** Telegram chats allowed to talk to your bots. */
+  chats: { id: number; name: string; botId?: ID; conversationId?: ID }[];
 }
 
 /** Settings that belong to one device and never sync through the hub. */
@@ -283,4 +390,7 @@ export const DEFAULT_TOOLS: BotToolToggles = {
   skills: true,
   conversationSearch: true,
   subagents: true,
+  bots: true,
+  browser: true,
+  email: true,
 };

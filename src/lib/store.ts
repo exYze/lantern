@@ -9,6 +9,8 @@ import type {
   Memory,
   Provider,
   Routine,
+  RunDoc,
+  RunnerStatus,
   Settings,
   Skill,
 } from "./types";
@@ -61,10 +63,16 @@ export interface AppState {
   activeConversationId: string | null;
   view: View;
   detailsOpen: boolean;
+  /** Opens the bot panel on this tab (e.g. "browser" from a browser card). */
+  detailsTab: string | null;
   /** Narrow screens show either the navigation list or the main pane. */
   navOpen: boolean;
-  /** Conversations with an agent run in progress. */
+  /** Conversations with an agent run in progress on this device. */
   running: Record<string, number>;
+  /** Runs in progress on the hub's runner, by conversation. */
+  remoteRuns: Record<string, RunDoc>;
+  /** The hub's runner, which runs bots while no app is open. */
+  runner: RunnerStatus | null;
   toasts: Toast[];
   /** The Lantern Hub this device syncs with, if any. */
   hub: HubConnection | null;
@@ -88,8 +96,11 @@ export const useApp = create<AppState>(() => ({
   activeConversationId: null,
   view: { kind: "chat" },
   detailsOpen: false,
+  detailsTab: null,
   navOpen: true,
   running: {},
+  remoteRuns: {},
+  runner: null,
   toasts: [],
   hub: null,
   sync: { status: "off", pending: 0 },
@@ -108,14 +119,28 @@ export const C = {
   memories: "memories",
   mcp: "mcp",
   routines: "routines",
+  /** Devices asking the hub's runner to run, stop or approve something. */
+  requests: "requests",
+  /** Runs in progress on the hub's runner. */
+  runs: "runs",
+  /** Webhook calls and emails waiting to start a routine. */
+  events: "events",
   messages: (conversationId: string) => `msg:${conversationId}`,
 };
+
+/** Whether a conversation has a run in progress, here or on the hub's runner. */
+export function isBusy(s: Pick<AppState, "running" | "remoteRuns" | "runner">, conversationId: string): boolean {
+  return !!s.running[conversationId] || (!!s.remoteRuns[conversationId] && !!s.runner?.online);
+}
+
+/** Called after changes from the hub are applied, with the collections they touched. */
+export const collectionWatchers = new Set<(touched: Set<string>) => void>();
 
 const byUpdated = <T extends { updatedAt: number }>(a: T, b: T) => b.updatedAt - a.updatedAt;
 const sortBots = (bots: Bot[]) => bots.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt);
 
 export async function loadAll(): Promise<void> {
-  const [settings, providers, bots, conversations, skills, memories, mcpServers, routines, defaultWorkspace] = await Promise.all([
+  const [settings, providers, bots, conversations, skills, memories, mcpServers, routines, runs, defaultWorkspace] = await Promise.all([
     db.get<Settings>(C.meta, "settings"),
     db.list<Provider>(C.providers),
     db.list<Bot>(C.bots),
@@ -124,6 +149,7 @@ export async function loadAll(): Promise<void> {
     db.list<Memory>(C.memories),
     db.list<McpServer>(C.mcp),
     db.list<Routine>(C.routines),
+    db.list<RunDoc>(C.runs),
     pfs.defaultWorkspace().catch(() => ""),
   ]);
   const merged = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
@@ -138,6 +164,7 @@ export async function loadAll(): Promise<void> {
     memories,
     mcpServers,
     routines,
+    remoteRuns: Object.fromEntries(runs.map((r) => [r.conversationId, r])),
     defaultWorkspace,
     activeBotId: sortedBots[0]?.id ?? null,
   });
@@ -154,6 +181,7 @@ export async function refreshFromDb(touched: Set<string>): Promise<void> {
   if (touched.has(C.mcp)) patch.mcpServers = await db.list<McpServer>(C.mcp);
   if (touched.has(C.routines)) patch.routines = await db.list<Routine>(C.routines);
   if (touched.has(C.meta)) patch.settings = { ...DEFAULT_SETTINGS, ...((await db.get<Settings>(C.meta, "settings")) ?? {}) };
+  if (touched.has(C.runs)) patch.remoteRuns = Object.fromEntries((await db.list<RunDoc>(C.runs)).map((r) => [r.conversationId, r]));
 
   const s = get();
   const messages = { ...s.messages };
@@ -161,7 +189,13 @@ export async function refreshFromDb(touched: Set<string>): Promise<void> {
     if (!c.startsWith("msg:")) continue;
     const convId = c.slice(4);
     // Only chats already open here need reloading; a chat running on this device owns its messages.
-    if (messages[convId] && !s.running[convId]) messages[convId] = (await db.list<ChatMessage>(c)).sort((a, b) => a.createdAt - b.createdAt);
+    if (messages[convId] && !s.running[convId]) {
+      const stored = (await db.list<ChatMessage>(c)).sort((a, b) => a.createdAt - b.createdAt);
+      // A reply streaming in from the hub isn't stored until it's done: keep showing it.
+      const ids = new Set(stored.map((m) => m.id));
+      const live = messages[convId].filter((m) => m.status === "streaming" && !ids.has(m.id));
+      messages[convId] = live.length ? [...stored, ...live] : stored;
+    }
   }
   if (patch.conversations) {
     const alive = new Set(patch.conversations.map((c) => c.id));
@@ -171,6 +205,17 @@ export async function refreshFromDb(touched: Set<string>): Promise<void> {
   if (patch.bots && s.activeBotId && !patch.bots.some((b) => b.id === s.activeBotId)) patch.activeBotId = patch.bots[0]?.id ?? null;
   if (!s.activeBotId && patch.bots?.length) patch.activeBotId = patch.bots[0].id;
   set({ ...patch, messages });
+  for (const watch of collectionWatchers) watch(touched);
+}
+
+/** Shows a message that's still being written on another machine (the hub's runner) without storing it. */
+export function applyLiveMessage(msg: ChatMessage) {
+  const s = get();
+  const list = s.messages[msg.conversationId];
+  if (!list || s.running[msg.conversationId]) return;
+  const i = list.findIndex((m) => m.id === msg.id);
+  const next = i === -1 ? [...list, msg].sort((a, b) => a.createdAt - b.createdAt) : list.map((m, j) => (j === i ? msg : m));
+  set({ messages: { ...s.messages, [msg.conversationId]: next } });
 }
 
 export function toast(text: string, kind: Toast["kind"] = "info") {
@@ -262,9 +307,9 @@ export function selectBot(botId: string | null) {
 
 // ------------------------------------------------------------------ conversations
 
-export async function createConversation(botId: string, title = "New chat", routineId?: string): Promise<Conversation> {
+export async function createConversation(botId: string, title = "New chat", routineId?: string, extra: Partial<Conversation> = {}): Promise<Conversation> {
   const now = Date.now();
-  const conv: Conversation = { id: uid("conv"), botId, title, routineId, createdAt: now, updatedAt: now };
+  const conv: Conversation = { ...extra, id: uid("conv"), botId, title, routineId, createdAt: now, updatedAt: now };
   set({ conversations: [conv, ...get().conversations], messages: { ...get().messages, [conv.id]: [] } });
   await db.put(C.conversations, conv.id, conv);
   return conv;
@@ -321,6 +366,10 @@ export function messagesOf(conversationId: string): ChatMessage[] {
 
 export async function appendMessage(msg: ChatMessage, persist = true): Promise<void> {
   const list = get().messages[msg.conversationId] ?? [];
+  // Chats are ordered by time, and devices' clocks disagree a little (the hub's runner
+  // may be a second behind your phone): a new message always comes after the last one.
+  const last = list[list.length - 1];
+  if (last && msg.createdAt <= last.createdAt) msg = { ...msg, createdAt: last.createdAt + 1 };
   set({ messages: { ...get().messages, [msg.conversationId]: [...list, msg] } });
   if (persist) await db.put(C.messages(msg.conversationId), msg.id, msg);
 }
@@ -429,12 +478,28 @@ export function waitForApproval(toolCallId: string, signal: AbortSignal): Promis
   });
 }
 
-export function answerApproval(toolCallId: string, answer: ApprovalAnswer) {
-  approvalWaiters.get(toolCallId)?.(answer);
+/** Sends answers for runs on the hub's runner (set by remote.ts, which needs the hub client). */
+export const remoteApproval: { send: ((conversationId: string, toolCallId: string, answer: ApprovalAnswer) => Promise<void>) | null } = { send: null };
+
+export function answerApproval(toolCallId: string, answer: ApprovalAnswer, conversationId?: string) {
+  const local = approvalWaiters.get(toolCallId);
+  if (local) {
+    local(answer);
+    return;
+  }
+  if (!conversationId || !remoteApproval.send) return;
+  void remoteApproval.send(conversationId, toolCallId, answer).catch((e) => toast(`Couldn't send your answer to the hub: ${(e as Error).message}`, "error"));
 }
 
 export function isAwaitingApproval(toolCallId: string): boolean {
   return approvalWaiters.has(toolCallId);
+}
+
+/** Whether this device can answer an approval: the run is here, or on the hub's runner. */
+export function canAnswerApproval(conversationId: string, toolCallId: string): boolean {
+  if (approvalWaiters.has(toolCallId)) return true;
+  const s = get();
+  return !!s.remoteRuns[conversationId] && !!s.runner?.online;
 }
 
 // ------------------------------------------------------------------ export / import

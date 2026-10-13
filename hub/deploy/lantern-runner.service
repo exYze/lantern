@@ -1,0 +1,22 @@
+[Unit]
+Description=Lantern runner (runs your bots on the hub while no app is open)
+Wants=lantern-hub.service
+After=lantern-hub.service network-online.target
+
+[Service]
+# The hub's user: the runner is the hub's own device and reaches its API socket.
+User=lantern-hub
+Group=lantern-hub
+Environment=LANTERN_RUNNER_DATA=/var/lib/lantern-hub/runner LANTERN_HUB_SOCKET=/run/lantern-hub/hub.sock NODE_ENV=production
+ExecStart=/opt/lantern/node/bin/node /usr/local/lib/lantern/lantern-runner.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/lantern-hub/runner
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,12 @@
 # With Tailscale installed and logged in, the hub is published to your tailnet
 # over HTTPS (tailscale serve) and devices signed in to your Tailscale account
 # can pair without a code. bubblewrap is installed for bot sandboxes.
+#
+# The runner (lantern-runner.mjs next to this script) runs bots on the hub while
+# no app is open; it needs Node.js 20 or later, which is installed from
+# nodejs.org (checked against its published SHA-256) when missing. Set
+# LANTERN_BROWSER=1 to also install a headless browser for bots (Chromium from
+# Playwright, about 200 MB). Set LANTERN_BROWSER=0 to skip it on upgrades.
 set -euo pipefail
 
 BIN=${1:?usage: sudo bash install.sh /path/to/lantern-hub [publisher-user]}
@@ -63,6 +69,54 @@ if command -v tailscale >/dev/null && tailscale ip >/dev/null 2>&1; then
   fi
 fi
 
+# ---------------------------------------------------------------- the runner
+NODE_MAJOR=24
+node_ok() { [[ -x /opt/lantern/node/bin/node ]] && [[ $(/opt/lantern/node/bin/node -p 'process.versions.node.split(".")[0]') -ge 20 ]]; }
+install_node() {
+  local arch tmp version file sum
+  case $(uname -m) in x86_64) arch=x64 ;; aarch64 | arm64) arch=arm64 ;; *) echo "No Node.js build for $(uname -m)." >&2; return 1 ;; esac
+  tmp=$(mktemp -d)
+  # The newest release of this major version, and its checksum, from nodejs.org.
+  curl -fsSL "https://nodejs.org/dist/latest-v$NODE_MAJOR.x/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"
+  file=$(grep -oE "node-v[0-9.]+-linux-$arch\.tar\.xz" "$tmp/SHASUMS256.txt" | head -1)
+  version=${file#node-}; version=${version%%-linux*}
+  curl -fsSL "https://nodejs.org/dist/latest-v$NODE_MAJOR.x/$file" -o "$tmp/$file"
+  sum=$(grep " $file\$" "$tmp/SHASUMS256.txt" | cut -d' ' -f1)
+  echo "$sum  $tmp/$file" | sha256sum -c --quiet
+  rm -rf /opt/lantern/node.new && mkdir -p /opt/lantern/node.new
+  tar -xJf "$tmp/$file" -C /opt/lantern/node.new --strip-components=1
+  rm -rf /opt/lantern/node && mv /opt/lantern/node.new /opt/lantern/node
+  rm -rf "$tmp"
+  echo "Installed Node.js $version for the runner."
+}
+RUNNER_JS="$HERE/lantern-runner.mjs"
+if [[ -f $RUNNER_JS ]]; then
+  mkdir -p /opt/lantern
+  node_ok || install_node
+  install -d -m 0755 /usr/local/lib/lantern
+  install -m 0644 "$RUNNER_JS" /usr/local/lib/lantern/lantern-runner.mjs
+  install -d -o lantern-hub -g lantern-hub -m 0700 /var/lib/lantern-hub/runner
+  install -m 0644 "$HERE/lantern-runner.service" /etc/systemd/system/
+fi
+
+# ---------------------------------------------------------------- the bots' browser
+if [[ ${LANTERN_BROWSER:-} == 1 ]] && node_ok; then
+  install -d -m 0755 /opt/lantern/browsers
+  # Chromium's headless shell and the libraries it needs, from Playwright.
+  PATH=/opt/lantern/node/bin:$PATH PLAYWRIGHT_BROWSERS_PATH=/opt/lantern/browsers \
+    /opt/lantern/node/bin/npx --yes playwright@1.63.0 install --with-deps chromium-headless-shell
+  chmod -R a+rX /opt/lantern/browsers
+fi
+BROWSER_BIN=$(find /opt/lantern/browsers -type f \( -name chrome-headless-shell -o -name headless_shell \) -perm -u+x 2>/dev/null | sort | tail -1 || true)
+if [[ -n $BROWSER_BIN ]]; then
+  echo "LANTERN_HUB_BROWSER=$BROWSER_BIN" > /etc/lantern-agent.env
+  # Chrome keeps its own sandbox; on Ubuntu that needs this profile for user namespaces.
+  if command -v apparmor_parser >/dev/null && [[ $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null) == 1 ]]; then
+    install -m 0644 "$HERE/lantern-browser.apparmor" /etc/apparmor.d/lantern-browser
+    apparmor_parser -r /etc/apparmor.d/lantern-browser
+  fi
+fi
+
 install -m 0644 "$HERE/lantern-hub.service" "$HERE/lantern-agent.service" /etc/systemd/system/
 # Optional: add official releases from GitHub daily (systemctl enable --now lantern-fetch-release.timer).
 cat > /etc/systemd/system/lantern-fetch-release.service <<UNIT
@@ -91,6 +145,15 @@ UNIT
 systemctl daemon-reload
 systemctl enable lantern-agent lantern-hub >/dev/null
 systemctl restart lantern-agent lantern-hub
+
+if [[ -f /etc/systemd/system/lantern-runner.service ]]; then
+  # The runner is the hub's own device; its token is made once and kept.
+  if [[ ! -s /var/lib/lantern-hub/runner/token ]]; then
+    sudo -u lantern-hub sh -c 'set -a; . /etc/lantern-hub.env; set +a; umask 077; /usr/local/bin/lantern-hub runner-token > /var/lib/lantern-hub/runner/token'
+  fi
+  systemctl enable lantern-runner >/dev/null
+  systemctl restart lantern-runner
+fi
 
 if command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
   tailscale serve --bg --https=443 unix:/run/lantern-hub/hub.sock >/dev/null

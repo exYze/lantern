@@ -8,12 +8,12 @@
 // fallback) and are applied without being echoed back. The last write wins.
 
 import { forgetHub, hubApi, HubError, hubToken, loadHubConnection, saveHubConnection, type HubConnection } from "./hub";
-import { changeListeners, db, httpStream, secrets } from "./platform";
+import { appVisible, changeListeners, db, httpStream, isRunner, notify, onResume, secrets } from "./platform";
 import { SseParser } from "./sse";
-import { C, refreshFromDb, useApp } from "./store";
-import { DEVICE_SETTINGS, type Bot, type McpServer, type Provider, type Settings } from "./types";
+import { applyLiveMessage, C, refreshFromDb, updateSettings, useApp } from "./store";
+import { DEVICE_SETTINGS, type Bot, type ChatMessage, type McpServer, type Provider, type RunnerStatus, type Settings } from "./types";
 
-const LIST_COLLECTIONS = [C.providers, C.bots, C.conversations, C.skills, C.memories, C.mcp, C.routines];
+const LIST_COLLECTIONS = [C.providers, C.bots, C.conversations, C.skills, C.memories, C.mcp, C.routines, C.requests, C.runs, C.events];
 const SECRET = "secret";
 const OUTBOX = "sync:outbox";
 const SEP = "\u001f";
@@ -129,10 +129,7 @@ export async function startSync(): Promise<void> {
   changeListeners.secret = onSecretChange;
   if (!started) {
     started = true;
-    window.addEventListener("online", () => pullSoon(0));
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) pullSoon(0);
-    });
+    onResume(() => pullSoon(0));
   }
   pollTimer ??= setInterval(() => pullSoon(0), 60_000);
   setSync({ status: "connecting", error: undefined });
@@ -153,6 +150,7 @@ export function stopSync() {
   conn = null;
   outbox = new Map();
   setSync({ status: "off", error: undefined, lastSyncAt: undefined });
+  useApp.setState({ runner: null });
 }
 
 export async function disconnectHub(): Promise<void> {
@@ -168,8 +166,27 @@ export async function syncNow(): Promise<void> {
     await pull();
     await push();
     if (conn) setSync({ status: "online", error: undefined, lastSyncAt: Date.now() });
+    void refreshRunner();
   } catch (e) {
     handleError(e);
+  }
+}
+
+let runnerCheckedAt = 0;
+
+/** Asks the hub whether its runner is online (at most once a minute; live events keep it fresh in between). */
+async function refreshRunner(force = false) {
+  if (!conn || isRunner() || (!force && Date.now() - runnerCheckedAt < 55_000)) return;
+  runnerCheckedAt = Date.now();
+  try {
+    const info = await hubApi<{ runner?: RunnerStatus }>("/api/v1/info", { timeoutMs: 15000 });
+    useApp.setState({ runner: info.runner ?? { online: false } });
+    // The runner keeps routine times in your zone, so tell it which one that is.
+    if (info.runner?.online && !useApp.getState().settings.timezone) {
+      await updateSettings({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    }
+  } catch {
+    // Offline: keep what we knew; sync reports the connection problem.
   }
 }
 
@@ -366,13 +383,41 @@ function openStream() {
   })();
 }
 
-/** `hello` (on connect) and `change` events both mean "there may be something to pull". */
+interface HubEvent {
+  type?: "live" | "notify" | "runner";
+  device?: string;
+  message?: ChatMessage;
+  title?: string;
+  body?: string;
+  runner?: RunnerStatus;
+}
+
+/**
+ * `hello` (on connect) and `change` events mean "there may be something to pull".
+ * `live` carries a reply still being written on the hub, `notify` a notification
+ * from the hub's runner, and `runner` the runner coming online.
+ */
 function handleEvent(data: string) {
+  let ev: HubEvent = {};
   try {
-    // Skip the echo of this device's own push.
-    if ((JSON.parse(data) as { device?: string }).device === conn?.deviceId) return;
+    ev = JSON.parse(data) as HubEvent;
   } catch {
     // Unknown payload: pulling is always safe.
   }
-  pullSoon();
+  // Skip the echo of this device's own push.
+  if (ev.device && ev.device === conn?.deviceId) return;
+  switch (ev.type) {
+    case "live":
+      if (ev.message) applyLiveMessage(ev.message);
+      return;
+    case "notify":
+      // A device you're looking at doesn't need a notification; the chat shows it.
+      if (!isRunner() && !appVisible() && useApp.getState().settings.notifications && ev.title) void notify(ev.title, ev.body ?? "");
+      return;
+    case "runner":
+      if (ev.runner) useApp.setState({ runner: ev.runner });
+      return;
+    default:
+      pullSoon();
+  }
 }

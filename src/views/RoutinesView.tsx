@@ -3,8 +3,8 @@ import { useState } from "react";
 import { Avatar } from "../components/Avatar";
 import { RoutineEditor } from "../components/RoutineEditor";
 import { Button, confirmDialog, Empty, IconButton, Pill } from "../components/ui";
-import { isRoutineActive, runRoutine } from "../lib/routines";
-import { describeSchedule, nextRun } from "../lib/schedule";
+import { describeRoutineTrigger, isRoutineActive, runRoutine, triggerKind } from "../lib/routines";
+import { nextRun } from "../lib/schedule";
 import { deleteRoutine, openConversation, saveRoutine, useApp } from "../lib/store";
 import { timeAgo } from "../lib/util";
 import { PageHead } from "./PageHead";
@@ -13,13 +13,19 @@ export function RoutinesView() {
   const routines = useApp((s) => s.routines);
   const bots = useApp((s) => s.bots);
   useApp((s) => s.running); // re-render as runs start and stop
+  const remoteRuns = useApp((s) => s.remoteRuns);
+  const runnerOnline = useApp((s) => !!s.runner?.online);
   const [editing, setEditing] = useState<string | "new" | null>(null);
 
   return (
     <div className="main-pane page">
       <PageHead
         title="Routines"
-        subtitle="Recurring tasks your bots run on a schedule while Lantern is open."
+        subtitle={
+          runnerOnline
+            ? "Tasks your bots run on a schedule, when a webhook is called, or when mail arrives. Your hub runs them, even when every app is closed."
+            : "Tasks your bots run on a schedule, when a webhook is called, or when mail arrives. Without your hub's runner, they run while Lantern is open."
+        }
         actions={
           <Button variant="primary" disabled={!bots.length} onClick={() => setEditing("new")}>
             <Plus size={16} /> New routine
@@ -35,7 +41,7 @@ export function RoutinesView() {
           <div className="stack">
             {routines.map((r) => {
               const bot = bots.find((b) => b.id === r.botId);
-              const active = isRoutineActive(r.id);
+              const active = isRoutineActive(r.id) || (!!r.conversationId && runnerOnline && !!remoteRuns[r.conversationId]);
               return (
                 <div key={r.id} className="card routine-card">
                   {bot && <Avatar spec={bot.avatar} size={36} busy={active} />}
@@ -50,8 +56,8 @@ export function RoutinesView() {
                       )}
                     </div>
                     <span className="muted small">
-                      {bot?.name} · {describeSchedule(r.schedule)}
-                      {r.enabled && r.nextRunAt ? ` · next ${new Date(r.nextRunAt).toLocaleString()}` : ""}
+                      {bot?.name} · {describeRoutineTrigger(r)}
+                      {r.enabled && r.nextRunAt && triggerKind(r) === "schedule" ? ` · next ${new Date(r.nextRunAt).toLocaleString()}` : ""}
                       {r.lastRunAt ? ` · last ran ${timeAgo(r.lastRunAt)}` : ""}
                     </span>
                     <span className="small clamp-2">{r.prompt}</span>
@@ -62,7 +68,7 @@ export function RoutinesView() {
                       className="switch"
                       aria-label="Enabled"
                       checked={r.enabled}
-                      onChange={(e) => void saveRoutine({ ...r, enabled: e.target.checked, nextRunAt: e.target.checked ? nextRun(r.schedule, Date.now()) : r.nextRunAt })}
+                      onChange={(e) => void saveRoutine({ ...r, enabled: e.target.checked, nextRunAt: e.target.checked && triggerKind(r) === "schedule" ? nextRun(r.schedule, Date.now()) : r.nextRunAt })}
                     />
                     <IconButton label="Run now" disabled={active} onClick={() => void runRoutine(r, true)}>
                       <Play size={16} />

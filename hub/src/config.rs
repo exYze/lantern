@@ -43,6 +43,8 @@ pub struct Config {
     /// This server's own Tailscale addresses. Requests from them (e.g. a bot's
     /// shell command on the hub) never count as the owner's device.
     pub self_addrs: Vec<String>,
+    /// Base addresses where `/hooks/...` can be reached (tailnet, LAN, a Funnel), shown in the app.
+    pub hook_urls: Vec<String>,
 }
 
 fn env(key: &str) -> Option<String> {
@@ -52,14 +54,17 @@ fn env(key: &str) -> Option<String> {
 impl Config {
     pub fn from_env() -> Self {
         let data_dir = PathBuf::from(env("LANTERN_HUB_DATA").unwrap_or_else(|| "./hub-data".into()));
+        let list = |key: &str| env(key).map(|s| s.split([',', ' ']).filter(|a| !a.is_empty()).map(|a| a.trim_end_matches('/').to_string()).collect::<Vec<_>>());
+        let public_url = env("LANTERN_HUB_PUBLIC_URL");
         Config {
+            hook_urls: list("LANTERN_HUB_HOOK_URLS").unwrap_or_else(|| public_url.iter().map(|u| u.trim_end_matches('/').to_string()).collect()),
             name: env("LANTERN_HUB_NAME").unwrap_or_else(|| "Lantern Hub".into()),
             listen: Listen::parse(&env("LANTERN_HUB_LISTEN").unwrap_or_else(|| "127.0.0.1:8780".into())),
             public_listen: env("LANTERN_HUB_PUBLIC_LISTEN"),
             releases_dir: env("LANTERN_HUB_RELEASES").map(PathBuf::from).unwrap_or_else(|| data_dir.join("releases")),
             agent_socket: env("LANTERN_HUB_AGENT").map(|s| PathBuf::from(s.strip_prefix("unix:").unwrap_or(&s))),
             workspace: env("LANTERN_HUB_WORKSPACE").map(PathBuf::from).unwrap_or_else(|| data_dir.join("workspace")),
-            public_url: env("LANTERN_HUB_PUBLIC_URL"),
+            public_url,
             tailscale_owner: env("LANTERN_HUB_TAILSCALE_OWNER"),
             self_addrs: env("LANTERN_HUB_SELF_ADDRS")
                 .map(|s| s.split([',', ' ']).filter(|a| !a.is_empty()).map(str::to_string).collect())

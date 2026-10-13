@@ -1,11 +1,16 @@
 //! Lantern Hub: one shared Lantern environment for all of a person's devices.
 //! It syncs bots, chats, memories, skills, routines, settings and secrets
-//! between paired devices, runs bot tools in a shared workspace, and serves the
-//! app's installers and update manifest.
+//! between paired devices, runs bot tools in a shared workspace (files, shell,
+//! a web browser, mail), takes webhooks for routines, relays the runner's live
+//! replies, and serves the app's installers and update manifest.
 
 mod agent;
 mod api;
+#[cfg(unix)]
+mod browser;
 mod config;
+mod hooks;
+mod mail;
 mod store;
 mod web;
 
@@ -22,6 +27,7 @@ Usage:
   lantern-hub agent --socket PATH --workspace DIR
                                          Run bot tools for the hub as the current user
   lantern-hub pair-code [--minutes N]    Print a one-time code for pairing a device (default 60 minutes)
+  lantern-hub runner-token               Create the runner's device token (replaces any old one) and print it
   lantern-hub devices                    List paired devices
   lantern-hub remove-device ID           Unpair a device
   lantern-hub --version";
@@ -63,6 +69,10 @@ async fn main() {
             let left = (expires - store::now_ms()) / 60_000;
             println!("{code}  (single use, expires in {left} minutes)");
         }
+        Some("runner-token") => {
+            let (_, token) = open_store(&config).reset_runner().unwrap_or_else(|e| fail(&e));
+            println!("{token}");
+        }
         Some("devices") => {
             for d in open_store(&config).devices().unwrap_or_else(|e| fail(&e)) {
                 println!("{}  {}  ({}, paired via {})", d.id, d.name, d.platform, d.paired_via);
@@ -97,10 +107,21 @@ async fn serve(config: Config) {
     let full = api::router(hub.clone())
         .merge(web::router(hub.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
+        .merge(hooks::router(hub.clone()))
         .layer(cors);
 
+    // Tells devices when the runner stops checking in.
+    let watcher = hub.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            watcher.check_runner();
+        }
+    });
+
     if let Some(addr) = public_listen {
-        let downloads = web::router(hub.clone());
+        // The plain-HTTP listener serves downloads and webhooks, never the API.
+        let downloads = web::router(hub.clone()).merge(hooks::router(hub.clone()));
         let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| fail(&format!("{addr}: {e}")));
         eprintln!("lantern-hub: downloads on http://{addr}");
         tokio::spawn(async move {

@@ -2,8 +2,11 @@
 // a risk class for the approval engine, and a short human summary for the UI.
 
 import type { Risk } from "./approval";
+import { BROWSER_TOOL } from "./browser";
+import { firecrawlCrawl, firecrawlMap, firecrawlScrape } from "./firecrawl";
 import { hubFs, hubShellRun, usesHub, type HubSandbox } from "./hub";
 import { capabilities, db, fs, platform, shellRun, webFetch } from "./platform";
+import { EMAIL_TOOLS } from "./mail";
 import { describeSchedule, nextRun, parseSchedule } from "./schedule";
 import { webSearch } from "./search";
 import {
@@ -14,8 +17,8 @@ import {
   saveSkill,
   useApp,
 } from "./store";
-import { DEFAULT_TOOLS, type Bot, type BotToolToggles, type Routine, type ToolCall } from "./types";
-import { uid } from "./util";
+import { DEFAULT_TOOLS, type Bot, type BotToolToggles, type ChatMessage, type Routine, type ToolCall } from "./types";
+import { clip, uid } from "./util";
 
 export interface ToolContext {
   bot: Bot;
@@ -31,6 +34,8 @@ export interface ToolContext {
   sandbox?: HubSandbox;
   /** Every tool this run offers the model (subagents pick theirs from it). */
   tools?: ToolDef[];
+  /** Bots in this ask_bot chain, outermost first; the last is this bot. */
+  chain?: string[];
   /** Reports progress of a long-running call (subagents) to its card in the chat. */
   onProgress?: (patch: Partial<ToolCall>, persist?: boolean) => void;
 }
@@ -39,6 +44,10 @@ export interface ToolContext {
 const files = (ctx: ToolContext) => (ctx.remote ? hubFs : fs);
 const canUseFiles = (bot: Bot) => capabilities.files || usesHub(bot);
 const canUseShell = (bot: Bot) => capabilities.shell || usesHub(bot);
+const firecrawl = () => {
+  const fc = useApp.getState().settings.firecrawl;
+  return fc?.url ? fc : undefined;
+};
 
 export interface ToolDef {
   name: string;
@@ -243,13 +252,16 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     name: "web_search",
     group: "web",
     risk: "network",
-    description: "Search the web. Returns titles, URLs and snippets. Follow up with web_fetch to read a page.",
-    parameters: obj({ query: { type: "string" }, max_results: { type: "integer" } }, ["query"]),
+    description:
+      "Search the web. Returns titles, URLs and snippets. Follow up with web_fetch to read a page, or set include_content to get the top pages' text with the results (slower).",
+    parameters: obj({ query: { type: "string" }, max_results: { type: "integer" }, include_content: { type: "boolean", description: "Also return each result page as text" } }, ["query"]),
     summarize: (a) => `Search the web for “${a.query}”`,
     async run(a) {
-      const results = await webSearch(str(a.query, "query"), useApp.getState().settings, Math.min(num(a.max_results) ?? 8, 15));
+      const withContent = !!a.include_content && !!firecrawl()?.search;
+      const results = await webSearch(str(a.query, "query"), useApp.getState().settings, Math.min(num(a.max_results) ?? (withContent ? 4 : 8), 15), withContent);
       if (!results.length) return "No results.";
-      return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join("\n");
+      const each = Math.floor(24000 / results.length);
+      return results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}${r.content ? `\n\n${clip(r.content.trim(), each)}\n` : ""}`).join("\n");
     },
   },
   {
@@ -262,8 +274,55 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     async run(a) {
       const url = str(a.url, "url");
       if (!/^https?:\/\//i.test(url)) throw new Error("Only http(s) URLs can be fetched.");
+      const fc = firecrawl();
+      if (fc?.read) {
+        // Firecrawl renders the page in a browser first, so JavaScript-heavy sites read properly.
+        try {
+          const page = await firecrawlScrape(fc.url, url);
+          if (page.markdown.trim()) return `${page.title ? `# ${page.title}\n` : ""}URL: ${page.url}${page.status ? ` (status ${page.status})` : ""}\n\n${clip(page.markdown, 30000)}`;
+        } catch (e) {
+          console.warn("Firecrawl couldn't read the page, fetching it directly", e);
+        }
+      }
       const p = await webFetch(url, 30000);
       return `${p.title ? `# ${p.title}\n` : ""}URL: ${p.url} (status ${p.status})\n\n${p.text}${p.truncated ? "\n[truncated]" : ""}`;
+    },
+  },
+  {
+    name: "web_map",
+    group: "web",
+    risk: "network",
+    available: () => !!firecrawl(),
+    description: "List the pages of a website (its URLs), optionally only those matching a search term. Useful before reading several pages of a site.",
+    parameters: obj({ url: { type: "string" }, search: { type: "string" }, limit: { type: "integer", description: "Default 100, max 500" } }, ["url"]),
+    summarize: (a) => `Map ${a.url}`,
+    async run(a) {
+      const links = await firecrawlMap(firecrawl()!.url, str(a.url, "url"), opt(a.search), Math.min(num(a.limit) ?? 100, 500));
+      return links.length ? links.join("\n") : "No pages found.";
+    },
+  },
+  {
+    name: "web_crawl",
+    group: "web",
+    risk: "network",
+    available: () => !!firecrawl(),
+    description: "Read several pages of one website at once (up to 20), starting from a URL and following its links. Returns each page as text. Takes up to a few minutes.",
+    parameters: obj(
+      {
+        url: { type: "string" },
+        limit: { type: "integer", description: "Pages to read, default 8, max 20" },
+        include_paths: { type: "array", items: { type: "string" }, description: 'Only URLs whose path matches these patterns, e.g. ["/docs/.*"]' },
+      },
+      ["url"],
+    ),
+    summarize: (a) => `Read ${a.url} and linked pages`,
+    async run(a, ctx) {
+      const limit = Math.max(1, Math.min(num(a.limit) ?? 8, 20));
+      const include = Array.isArray(a.include_paths) ? a.include_paths.filter((p): p is string => typeof p === "string") : [];
+      const pages = await firecrawlCrawl(firecrawl()!.url, str(a.url, "url"), limit, include, ctx.signal);
+      if (!pages.length) return "The crawl found no pages.";
+      const each = Math.floor(28000 / pages.length);
+      return pages.map((p) => `## ${p.title ?? p.url}\nURL: ${p.url}\n\n${clip(p.markdown.trim(), each)}`).join("\n\n");
     },
   },
   {
@@ -394,17 +453,44 @@ export const BUILTIN_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "recent_chats",
+    group: "conversationSearch",
+    risk: "internal",
+    description: "List chats that changed recently, newest first, with the latest message of each. The primary bot can set all_bots to see every bot's chats.",
+    parameters: obj({ hours: { type: "integer", description: "How far back, default 24" }, all_bots: { type: "boolean" } }),
+    summarize: () => "Look over recent chats",
+    async run(a, ctx) {
+      const { conversations, bots, settings } = useApp.getState();
+      const everyone = !!a.all_bots && settings.primaryBotId === ctx.bot.id;
+      const since = Date.now() - Math.min(num(a.hours) ?? 24, 24 * 14) * 3600_000;
+      const recent = conversations.filter((c) => c.updatedAt >= since && c.id !== ctx.conversationId && (everyone || c.botId === ctx.bot.id)).slice(0, 25);
+      if (!recent.length) return "No chats changed in that time.";
+      const lines: string[] = [];
+      for (const c of recent) {
+        const list = await db.list<ChatMessage>(`msg:${c.id}`);
+        const last = list.filter((m) => m.role !== "tool" && m.content.trim()).sort((x, y) => x.createdAt - y.createdAt).at(-1);
+        const who = everyone ? `${bots.find((b) => b.id === c.botId)?.name ?? "a deleted bot"}, ` : "";
+        const said = last ? `${last.role === "user" ? "user" : "bot"}: ${last.content.replace(/\s+/g, " ").slice(0, 240)}` : "(empty)";
+        lines.push(`• "${c.title}" (${who}${new Date(c.updatedAt).toLocaleString()}) ${said}`);
+      }
+      return lines.join("\n");
+    },
+  },
+  {
     name: "search_conversations",
     group: "conversationSearch",
     risk: "internal",
-    description: "Search your earlier conversations with the user for a word or phrase.",
-    parameters: obj({ query: { type: "string" }, limit: { type: "integer" } }, ["query"]),
+    description: "Search your earlier conversations with the user for a word or phrase. The primary bot can set all_bots to search every bot's chats.",
+    parameters: obj({ query: { type: "string" }, limit: { type: "integer" }, all_bots: { type: "boolean" } }, ["query"]),
     summarize: (a) => `Search past chats for “${a.query}”`,
     async run(a, ctx) {
       const q = str(a.query, "query");
-      const hits = await db.search<{ role: string; content: string; createdAt: number; conversationId: string }>("msg:", q, Math.min(num(a.limit) ?? 20, 50));
-      const convs = useApp.getState().conversations;
-      const mine = hits.filter((h) => convs.find((c) => c.id === h.data.conversationId)?.botId === ctx.bot.id && h.data.conversationId !== ctx.conversationId);
+      const { conversations: convs, bots, settings } = useApp.getState();
+      const everyone = !!a.all_bots && settings.primaryBotId === ctx.bot.id;
+      const hits = await db.search<{ role: string; content: string; createdAt: number; conversationId: string }>("msg:", q, Math.min(num(a.limit) ?? 20, 50) * (everyone ? 1 : 3));
+      const mine = hits
+        .filter((h) => h.data.conversationId !== ctx.conversationId && (everyone || convs.find((c) => c.id === h.data.conversationId)?.botId === ctx.bot.id))
+        .slice(0, Math.min(num(a.limit) ?? 20, 50));
       if (!mine.length) return "No matches in earlier conversations.";
       return mine
         .map((h) => {
@@ -412,11 +498,14 @@ export const BUILTIN_TOOLS: ToolDef[] = [
           const text = h.data.content ?? "";
           const i = text.toLowerCase().indexOf(q.toLowerCase());
           const snippet = text.slice(Math.max(0, i - 160), i + 240).replace(/\s+/g, " ");
-          return `• "${conv?.title}" (${new Date(h.data.createdAt).toLocaleDateString()}, ${h.data.role}): …${snippet}…`;
+          const who = everyone ? `${bots.find((b) => b.id === conv?.botId)?.name ?? "a deleted bot"}, ` : "";
+          return `• "${conv?.title}" (${who}${new Date(h.data.createdAt).toLocaleDateString()}, ${h.data.role}): …${snippet}…`;
         })
         .join("\n");
     },
   },
+  BROWSER_TOOL,
+  ...EMAIL_TOOLS,
 ];
 
 export function skillsForBot(bot: Bot) {
@@ -438,6 +527,6 @@ export function riskOf(tool: ToolDef, args: Record<string, unknown>): Risk {
 }
 
 export function platformLabel(): string {
-  const names: Record<string, string> = { windows: "Windows", macos: "macOS", linux: "Linux", android: "Android", ios: "iOS", web: "a web browser" };
+  const names: Record<string, string> = { windows: "Windows", macos: "macOS", linux: "Linux", android: "Android", ios: "iOS", web: "a web browser", hub: "the user's Lantern Hub" };
   return names[platform.os] ?? platform.os;
 }

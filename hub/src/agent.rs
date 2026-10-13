@@ -1,15 +1,19 @@
-//! Bot tools on the hub: files and shell commands in a shared workspace.
+//! Bot tools on the hub: files and shell commands in a shared workspace, a web
+//! browser per bot, and bots' mailboxes.
 //!
 //! In production the tools run in a separate `lantern-hub agent` process under
 //! its own Unix user, so a bot's commands can't read the hub database (which
 //! holds device tokens and synced secrets). The hub talks to it over a local
 //! socket: one JSON request line in, one JSON response line out.
 
+use crate::mail::{self, ImapOp, MailAccount, OutgoingMail};
 use lantern_tools::fs::{self, Edit, GrepRequest};
 use lantern_tools::shell::{Sandbox, ShellRequest, ShellRunner};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::Arc;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -25,6 +29,44 @@ pub enum ToolRequest {
     FsDelete { root: String, path: String, #[serde(default)] confine: bool },
     ShellRun { request: ShellRequest },
     ShellCancel { id: String },
+    /// One DevTools command for the bot's browser (`key`), started with `profile` if it isn't open.
+    BrowserCall {
+        key: String,
+        profile: String,
+        #[serde(default)]
+        downloads: Option<String>,
+        method: String,
+        #[serde(default)]
+        params: Value,
+        /// Send it to the bot's current tab rather than the browser.
+        #[serde(default)]
+        page: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    BrowserFollowPopup { key: String },
+    BrowserStatus { key: String },
+    BrowserClose { key: String },
+    MailList {
+        account: MailAccount,
+        #[serde(default)]
+        folder: Option<String>,
+        #[serde(default)]
+        since_uid: Option<u32>,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        unread_only: bool,
+    },
+    MailRead {
+        account: MailAccount,
+        #[serde(default)]
+        folder: Option<String>,
+        uid: u32,
+        #[serde(default)]
+        mark_seen: bool,
+    },
+    MailSend { account: MailAccount, mail: OutgoingMail },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -47,12 +89,53 @@ pub struct LocalTools {
     workspace: PathBuf,
     shell: ShellRunner,
     sandbox: tokio::sync::OnceCell<bool>,
+    #[cfg(unix)]
+    browsers: Arc<crate::browser::Browsers>,
 }
 
 impl LocalTools {
     pub fn new(workspace: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&workspace);
-        LocalTools { workspace, shell: ShellRunner::default(), sandbox: tokio::sync::OnceCell::new() }
+        LocalTools {
+            workspace,
+            shell: ShellRunner::default(),
+            sandbox: tokio::sync::OnceCell::new(),
+            #[cfg(unix)]
+            browsers: Arc::new(crate::browser::Browsers::default()),
+        }
+    }
+
+    /// Browser profiles and downloads stay inside the workspace, like everything bots write.
+    #[cfg(unix)]
+    fn check_inside(&self, path: &str) -> Result<PathBuf, String> {
+        let p = fs::normalize(Path::new(path));
+        if !Path::new(path).is_absolute() || !p.starts_with(fs::normalize(&self.workspace)) {
+            return Err(format!("{path} must be inside the workspace ({})", self.workspace.display()));
+        }
+        Ok(p)
+    }
+
+    #[cfg(unix)]
+    async fn browser(&self, req: ToolRequest) -> Result<Value, String> {
+        match req {
+            ToolRequest::BrowserCall { key, profile, downloads, method, params, page, timeout_ms } => {
+                let profile = self.check_inside(&profile)?;
+                let downloads = match downloads {
+                    Some(d) => Some(self.check_inside(&d)?.to_string_lossy().into_owned()),
+                    None => None,
+                };
+                self.browsers.call(&key, &profile, downloads.as_deref(), &method, params, page, timeout_ms).await
+            }
+            ToolRequest::BrowserFollowPopup { key } => Ok(json!({ "switched": self.browsers.follow_popup(&key).await? })),
+            ToolRequest::BrowserStatus { key } => Ok(self.browsers.status(&key)),
+            ToolRequest::BrowserClose { key } => Ok(json!({ "closed": self.browsers.close(&key) })),
+            _ => unreachable!(),
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn browser(&self, _req: ToolRequest) -> Result<Value, String> {
+        Err("The bot browser needs a Linux hub.".into())
     }
 
     /// Whether bubblewrap sandboxes work on this machine (checked once).
@@ -77,6 +160,8 @@ impl LocalTools {
                 "os": os_name(),
                 "user": std::env::var("USER").unwrap_or_default(),
                 "sandbox": self.can_sandbox().await,
+                "browser": cfg!(unix) && browser_available(),
+                "mail": true,
             })),
             // File operations can block on large trees; keep them off the async workers.
             ToolRequest::FsRead { root, path, offset, limit, confine } => blocking(move || to_json(fs::read(&root, &path, offset, limit, confine))).await,
@@ -104,8 +189,25 @@ impl LocalTools {
                 self.shell.cancel(&id);
                 Ok(Value::Null)
             }
+            req @ (ToolRequest::BrowserCall { .. } | ToolRequest::BrowserFollowPopup { .. } | ToolRequest::BrowserStatus { .. } | ToolRequest::BrowserClose { .. }) => self.browser(req).await,
+            ToolRequest::MailList { account, folder, since_uid, limit, unread_only } => {
+                let op = ImapOp::List { folder: folder.unwrap_or_else(|| "INBOX".into()), since_uid, limit: limit.unwrap_or(20).clamp(1, 100), unread_only };
+                mail::imap(&account, op).await
+            }
+            ToolRequest::MailRead { account, folder, uid, mark_seen } => mail::imap(&account, ImapOp::Read { folder: folder.unwrap_or_else(|| "INBOX".into()), uid, mark_seen }).await,
+            ToolRequest::MailSend { account, mail: out } => mail::send(&account, &out).await,
         }
     }
+}
+
+#[cfg(unix)]
+fn browser_available() -> bool {
+    crate::browser::Browsers::available()
+}
+
+#[cfg(not(unix))]
+fn browser_available() -> bool {
+    false
 }
 
 fn to_json<T: Serialize>(v: Result<T, String>) -> Result<Value, String> {

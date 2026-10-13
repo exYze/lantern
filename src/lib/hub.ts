@@ -19,6 +19,10 @@ export interface HubToolInfo {
   user: string;
   /** The hub can run commands in bubblewrap sandboxes (unknown on hubs before 0.3). */
   sandbox?: boolean;
+  /** A headless browser is installed for bots (0.5). */
+  browser?: boolean;
+  /** The hub can reach bots' mailboxes (0.5). */
+  mail?: boolean;
   /** When this device last asked; refreshed now and then in case the hub was upgraded. */
   fetchedAt?: number;
 }
@@ -209,7 +213,7 @@ const TOOL_INFO_MAX_AGE = 30 * 60_000;
 
 export async function hubToolInfo(): Promise<HubToolInfo> {
   const cached = hubConnection()?.tools;
-  if (cached && cached.sandbox !== undefined && Date.now() - (cached.fetchedAt ?? 0) < TOOL_INFO_MAX_AGE) return cached;
+  if (cached && cached.sandbox !== undefined && cached.browser !== undefined && Date.now() - (cached.fetchedAt ?? 0) < TOOL_INFO_MAX_AGE) return cached;
   try {
     const tools = { ...(await hubTool<HubToolInfo>({ op: "info" }, 15000)), fetchedAt: Date.now() };
     const latest = hubConnection();
@@ -230,6 +234,67 @@ export const hubFs = {
   find: (root: string, pattern: string, path?: string, limit?: number, confine?: boolean) => hubTool<string[]>({ op: "fs_find", root, pattern, path, limit, confine }),
   grep: (request: GrepRequest, confine?: boolean) => hubTool<string>({ op: "fs_grep", request, confine }),
   delete: (root: string, path: string, confine?: boolean) => hubTool<string>({ op: "fs_delete", root, path, confine }),
+};
+
+/** A bot's browser on the hub: `key` names it, `profile` keeps its sign-ins. */
+export interface BrowserSpot {
+  key: string;
+  profile: string;
+  downloads?: string;
+}
+
+export const hubBrowser = {
+  /** One DevTools command; `page` (default) sends it to the bot's current tab. */
+  call: <T = any>(spot: BrowserSpot, method: string, params: Record<string, unknown> = {}, opts: { page?: boolean; timeoutMs?: number } = {}) =>
+    hubTool<T>(
+      { op: "browser_call", key: spot.key, profile: spot.profile, downloads: spot.downloads, method, params, page: opts.page ?? true, timeout_ms: opts.timeoutMs },
+      (opts.timeoutMs ?? 30_000) + 30_000,
+    ),
+  followPopup: (key: string) => hubTool<{ switched: boolean }>({ op: "browser_follow_popup", key }),
+  status: (key: string) => hubTool<{ open: boolean; dialogs?: string[]; idleMs?: number }>({ op: "browser_status", key }, 15_000),
+  close: (key: string) => hubTool<{ closed: boolean }>({ op: "browser_close", key }, 15_000),
+};
+
+/** Mail account details for the hub, password included (sent only to your hub). */
+export interface MailAccountRequest {
+  address: string;
+  username: string;
+  password: string;
+  imapHost: string;
+  imapPort: number;
+  imapSecurity?: "tls" | "none";
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecurity: "tls" | "starttls" | "none";
+}
+
+export interface MailSummary {
+  uid: number;
+  from: string;
+  subject: string;
+  date: string;
+  seen: boolean;
+}
+
+export interface MailMessage {
+  uid: number;
+  from: string;
+  to: string;
+  cc: string;
+  subject: string;
+  date: string;
+  messageId: string;
+  text: string;
+  attachments: { name: string; size: number; type: string }[];
+}
+
+export const hubMail = {
+  list: (account: MailAccountRequest, opts: { folder?: string; sinceUid?: number; limit?: number; unreadOnly?: boolean } = {}) =>
+    hubTool<{ messages: MailSummary[]; total: number; uidNext?: number }>({ op: "mail_list", account, folder: opts.folder, since_uid: opts.sinceUid, limit: opts.limit, unread_only: !!opts.unreadOnly }, 90_000),
+  read: (account: MailAccountRequest, uid: number, opts: { folder?: string; markSeen?: boolean } = {}) =>
+    hubTool<MailMessage>({ op: "mail_read", account, folder: opts.folder, uid, mark_seen: !!opts.markSeen }, 90_000),
+  send: (account: MailAccountRequest, mail: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
+    hubTool<{ sent: boolean }>({ op: "mail_send", account, mail: { to: mail.to, cc: mail.cc ?? [], subject: mail.subject, body: mail.body, inReplyTo: mail.inReplyTo } }, 90_000),
 };
 
 export async function hubShellRun(

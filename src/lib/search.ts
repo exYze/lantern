@@ -1,3 +1,4 @@
+import { firecrawlSearch } from "./firecrawl";
 import { httpRequest } from "./platform";
 import type { Settings } from "./types";
 
@@ -5,6 +6,8 @@ export interface SearchResult {
   title: string;
   url: string;
   snippet: string;
+  /** The page as Markdown, when the search engine read it too (Firecrawl). */
+  content?: string;
 }
 
 function decodeEntities(s: string): string {
@@ -39,7 +42,16 @@ export function parseDuckDuckGo(html: string, max: number): SearchResult[] {
   return results;
 }
 
-export async function webSearch(query: string, settings: Settings, max = 8): Promise<SearchResult[]> {
+export async function webSearch(query: string, settings: Settings, max = 8, withContent = false): Promise<SearchResult[]> {
+  const fc = settings.firecrawl;
+  if (fc?.search && fc.url) {
+    try {
+      return await firecrawlSearch(fc.url, query, max, withContent);
+    } catch (e) {
+      // Fall back to the regular search engine so a Firecrawl outage doesn't stop the bot.
+      console.warn("Firecrawl search failed, using the fallback engine", e);
+    }
+  }
   if (settings.search.kind === "searxng" && settings.search.url) {
     const url = `${settings.search.url.replace(/\/+$/, "")}/search?format=json&q=${encodeURIComponent(query)}`;
     const res = await httpRequest({ url, timeoutMs: 20000, headers: { Accept: "application/json" } });

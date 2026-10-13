@@ -45,6 +45,14 @@ function plan(body) {
   }
 
   const tool = (name, args) => (hasTool(name) ? { toolCalls: [{ name, args }] } : null);
+  // A bot asked by another bot (ask_bot) answers it plainly.
+  if (system.includes("which needs your help")) return { text: `Happy to help: ${ask.slice(0, 80)}. The answer is 4.` };
+  const askBot = ask.match(/ask (\w+)/);
+  if (askBot) return tool("ask_bot", { bot: askBot[1], message: "What is 2 + 2?", wait: !ask.includes("hand off") }) ?? { text: "I can't reach other bots." };
+  if (ask.includes("browse")) return tool("browser", { action: "open", url: "https://example.com" }) ?? { text: "No browser here." };
+  if (ask.includes("check email")) return tool("email_list", { unread_only: true }) ?? { text: "No inbox." };
+  if (ask.includes("send email")) return tool("email_send", { to: ["pat@lantern.test"], subject: "Hello from Lantern", body: "Hi Pat, this is a test." }) ?? { text: "No inbox." };
+  if (ask.includes("slow")) return { text: "Working slowly. ".repeat(400) };
   if (ask.includes("list")) return tool("list_dir", {}) ?? { text: "I can't list files without tools." };
   if (ask.includes("shell") || ask.includes("command")) return tool("shell", { command: "echo hello from Lantern" }) ?? { text: "No shell here." };
   if (ask.includes("delete")) return tool("shell", { command: "rm -rf ./build" }) ?? { text: "No shell here." };
