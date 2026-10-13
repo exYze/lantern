@@ -9,7 +9,7 @@
 # no app is open; it needs Node.js 20 or later, which is installed from
 # nodejs.org (checked against its published SHA-256) when missing. Set
 # LANTERN_BROWSER=1 to also install a headless browser for bots (Chromium from
-# Playwright, about 200 MB). Set LANTERN_BROWSER=0 to skip it on upgrades.
+# Playwright, about 200 MB); upgrades keep a browser that's already installed.
 set -euo pipefail
 
 BIN=${1:?usage: sudo bash install.sh /path/to/lantern-hub [publisher-user]}
