@@ -2,12 +2,13 @@
 
 import type { AvatarSpec, BotToolToggles, Schedule } from "./types";
 import { DEFAULT_TOOLS } from "./types";
+import { MORE_TEMPLATES } from "./templates-more";
 
 export interface BotTemplate {
   id: string;
   name: string;
   tagline: string;
-  category: "Research" | "Engineering" | "Writing" | "Productivity" | "Learning" | "Operations" | "Everyday";
+  category: "Research" | "Engineering" | "Writing" | "Productivity" | "Learning" | "Operations" | "Everyday" | "Sales" | "Marketing" | "Support" | "Finance" | "People" | "Product" | "Design" | "Home";
   avatar: AvatarSpec;
   instructions: string;
   tools?: Partial<BotToolToggles>;
@@ -16,7 +17,7 @@ export interface BotTemplate {
   desktopOnly?: boolean;
 }
 
-export const TEMPLATES: BotTemplate[] = [
+const BASE_TEMPLATES: BotTemplate[] = [
   {
     id: "companion",
     name: "Lumi",
@@ -149,6 +150,8 @@ export const TEMPLATES: BotTemplate[] = [
     starters: ["What documents do you have?", "What does the contract say about termination?"],
   },
 ];
+
+export const TEMPLATES: BotTemplate[] = [...BASE_TEMPLATES, ...MORE_TEMPLATES];
 
 export function templateTools(t: BotTemplate): BotToolToggles {
   return { ...DEFAULT_TOOLS, ...(t.tools ?? {}) };

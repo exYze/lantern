@@ -15,7 +15,7 @@ export const MAX_PARALLEL_SUBAGENTS = 3;
 /** Tool results kept in the chat transcript of a subagent (the subagent itself sees them in full). */
 const SHOWN_RESULT_CHARS = 4000;
 /** What a subagent may not do: talk to the user's long-term state, schedule things, or start more subagents. */
-const WITHHELD = new Set(["delegate_task", "remember", "forget", "create_skill", "create_routine", "list_routines", "delete_routine", "search_conversations"]);
+const WITHHELD = new Set(["delegate_task", "remember", "forget", "create_skill", "create_routine", "list_routines", "delete_routine", "search_conversations", "ask_user", "ask_bot", "set_goal", "finish_goal", "update_profile"]);
 
 export const DELEGATE_TOOL: ToolDef = {
   name: "delegate_task",

@@ -93,6 +93,8 @@ pub fn run() {
             http::web_fetch,
             fs_tools::fs_read,
             fs_tools::fs_write,
+            fs_tools::fs_read_bytes,
+            fs_tools::fs_write_bytes,
             fs_tools::fs_edit,
             fs_tools::fs_list,
             fs_tools::fs_find,

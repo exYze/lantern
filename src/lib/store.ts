@@ -7,6 +7,8 @@ import type {
   Conversation,
   McpServer,
   Memory,
+  Page,
+  SharedFile,
   Provider,
   Routine,
   RunDoc,
@@ -15,6 +17,7 @@ import type {
   Skill,
 } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
+import type { ApprovalAnswer } from "./approval";
 import type { HubConnection } from "./hub";
 import type { SyncState } from "./sync";
 import { uid } from "./util";
@@ -58,6 +61,9 @@ export interface AppState {
   memories: Memory[];
   mcpServers: McpServer[];
   routines: Routine[];
+  /** Pages bots wrote, and files they shared (the Library). */
+  pages: Page[];
+  files: SharedFile[];
   defaultWorkspace: string;
   activeBotId: string | null;
   activeConversationId: string | null;
@@ -65,6 +71,12 @@ export interface AppState {
   detailsOpen: boolean;
   /** Opens the bot panel on this tab (e.g. "browser" from a browser card). */
   detailsTab: string | null;
+  /** A page or file open in the viewer. */
+  viewer: { kind: "page" | "file"; id: string } | null;
+  /** The Ctrl/Cmd+K search is open. */
+  palette: boolean;
+  /** Text to add to the message box (a quote of selected text); `n` makes each one new. */
+  composerInsert: { text: string; n: number } | null;
   /** Narrow screens show either the navigation list or the main pane. */
   navOpen: boolean;
   /** Conversations with an agent run in progress on this device. */
@@ -91,12 +103,17 @@ export const useApp = create<AppState>(() => ({
   memories: [],
   mcpServers: [],
   routines: [],
+  pages: [],
+  files: [],
   defaultWorkspace: "",
   activeBotId: null,
   activeConversationId: null,
   view: { kind: "chat" },
   detailsOpen: false,
   detailsTab: null,
+  viewer: null,
+  palette: false,
+  composerInsert: null,
   navOpen: true,
   running: {},
   remoteRuns: {},
@@ -125,6 +142,8 @@ export const C = {
   runs: "runs",
   /** Webhook calls and emails waiting to start a routine. */
   events: "events",
+  pages: "pages",
+  files: "files",
   messages: (conversationId: string) => `msg:${conversationId}`,
 };
 
@@ -140,7 +159,7 @@ const byUpdated = <T extends { updatedAt: number }>(a: T, b: T) => b.updatedAt -
 const sortBots = (bots: Bot[]) => bots.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt);
 
 export async function loadAll(): Promise<void> {
-  const [settings, providers, bots, conversations, skills, memories, mcpServers, routines, runs, defaultWorkspace] = await Promise.all([
+  const [settings, providers, bots, conversations, skills, memories, mcpServers, routines, runs, pages, files, defaultWorkspace] = await Promise.all([
     db.get<Settings>(C.meta, "settings"),
     db.list<Provider>(C.providers),
     db.list<Bot>(C.bots),
@@ -150,6 +169,8 @@ export async function loadAll(): Promise<void> {
     db.list<McpServer>(C.mcp),
     db.list<Routine>(C.routines),
     db.list<RunDoc>(C.runs),
+    db.list<Page>(C.pages),
+    db.list<SharedFile>(C.files),
     pfs.defaultWorkspace().catch(() => ""),
   ]);
   const merged = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
@@ -165,6 +186,8 @@ export async function loadAll(): Promise<void> {
     mcpServers,
     routines,
     remoteRuns: Object.fromEntries(runs.map((r) => [r.conversationId, r])),
+    pages: pages.sort(byUpdated),
+    files: files.sort((a, b) => b.createdAt - a.createdAt),
     defaultWorkspace,
     activeBotId: sortedBots[0]?.id ?? null,
   });
@@ -181,6 +204,8 @@ export async function refreshFromDb(touched: Set<string>): Promise<void> {
   if (touched.has(C.mcp)) patch.mcpServers = await db.list<McpServer>(C.mcp);
   if (touched.has(C.routines)) patch.routines = await db.list<Routine>(C.routines);
   if (touched.has(C.meta)) patch.settings = { ...DEFAULT_SETTINGS, ...((await db.get<Settings>(C.meta, "settings")) ?? {}) };
+  if (touched.has(C.pages)) patch.pages = (await db.list<Page>(C.pages)).sort(byUpdated);
+  if (touched.has(C.files)) patch.files = (await db.list<SharedFile>(C.files)).sort((a, b) => b.createdAt - a.createdAt);
   if (touched.has(C.runs)) patch.remoteRuns = Object.fromEntries((await db.list<RunDoc>(C.runs)).map((r) => [r.conversationId, r]));
 
   const s = get();
@@ -237,8 +262,10 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
 }
 
 export async function addApprovalRule(rule: Omit<ApprovalRule, "id" | "createdAt">): Promise<void> {
-  const rules = get().settings.approvalRules.filter((r) => !(r.tool === rule.tool && r.pattern === rule.pattern));
-  await updateSettings({ approvalRules: [...rules, { ...rule, id: uid("rule"), createdAt: Date.now() }] });
+  const now = Date.now();
+  // Replaces a rule for the same thing and the same bot, and drops rules that have run out.
+  const rules = get().settings.approvalRules.filter((r) => !(r.tool === rule.tool && r.pattern === rule.pattern && r.botId === rule.botId) && !(r.expiresAt && r.expiresAt <= now));
+  await updateSettings({ approvalRules: [...rules, { ...rule, id: uid("rule"), createdAt: now }] });
 }
 
 export function workspaceFor(bot: Bot | undefined): string {
@@ -444,6 +471,8 @@ export async function deleteMcpServer(id: string): Promise<void> {
   await db.delete(C.mcp, id);
   for (const k of server?.envKeys ?? []) await secrets.delete(`mcp:${id}:env:${k}`);
   for (const k of server?.headerKeys ?? []) await secrets.delete(`mcp:${id}:header:${k}`);
+  await secrets.delete(`mcp:${id}:oauth`);
+  await secrets.delete(`mcp:${id}:oauth-client`);
   for (const b of get().bots) await db.put(C.bots, b.id, b);
 }
 
@@ -460,7 +489,6 @@ export async function deleteRoutine(id: string): Promise<void> {
 
 // ------------------------------------------------------------------ approvals
 
-type ApprovalAnswer = "allow" | "always" | "deny";
 const approvalWaiters = new Map<string, (a: ApprovalAnswer) => void>();
 
 export function waitForApproval(toolCallId: string, signal: AbortSignal): Promise<ApprovalAnswer> {
@@ -477,6 +505,9 @@ export function waitForApproval(toolCallId: string, signal: AbortSignal): Promis
     });
   });
 }
+
+/** Sends form answers for runs on the hub's runner (set by remote.ts). */
+export const remoteForm: { send: ((conversationId: string, toolCallId: string, answers: Record<string, import("./types").FormValue> | null) => Promise<void>) | null } = { send: null };
 
 /** Sends answers for runs on the hub's runner (set by remote.ts, which needs the hub client). */
 export const remoteApproval: { send: ((conversationId: string, toolCallId: string, answer: ApprovalAnswer) => Promise<void>) | null } = { send: null };

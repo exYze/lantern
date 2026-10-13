@@ -4,7 +4,7 @@
 // streams its replies back as live events and stores them like any device.
 
 import { capabilities, isRunner } from "./platform";
-import { C, isBusy, remoteApproval, useApp } from "./store";
+import { C, isBusy, remoteApproval, remoteForm, useApp } from "./store";
 import { db } from "./platform";
 import type { Bot, RunnerRequest } from "./types";
 import { uid } from "./util";
@@ -63,3 +63,4 @@ export const requestStop = (conversationId: string) => send({ kind: "stop", conv
 export const requestRoutine = (routineId: string) => send({ kind: "routine", routineId });
 
 remoteApproval.send = (conversationId, toolCallId, answer) => send({ kind: "approve", conversationId, toolCallId, answer });
+remoteForm.send = (conversationId, toolCallId, answers) => send({ kind: "answer", conversationId, toolCallId, answers: answers ?? undefined });

@@ -56,6 +56,14 @@ export interface BotToolToggles {
   browser?: boolean;
   /** Read and send mail from the bot's own inbox, when it has one (0.5). */
   email?: boolean;
+  /** Ask the user with forms in the chat (0.6). */
+  forms?: boolean;
+  /** Keep a plan and pursue a goal until it's done (0.6). */
+  planning?: boolean;
+  /** Write pages, share files, make slide decks and read documents (0.6). */
+  pages?: boolean;
+  /** Change its own name, tagline and avatar (0.6). */
+  profile?: boolean;
 }
 
 /** A mailbox of the bot's own. The password lives in the secret store under `email:<botId>`. */
@@ -118,17 +126,70 @@ export interface Conversation {
   from?: { botId: ID; conversationId: ID };
   /** Where the chat happens besides the app (a Telegram chat id). */
   channel?: { kind: "telegram"; chatId: number };
+  /** The bot's checklist for the work in this chat. */
+  plan?: { items: PlanItem[]; updatedAt: number };
+  /** What the bot keeps working toward until it's done. */
+  goal?: { objective: string; status: "active" | "done" | "blocked" | "stopped"; note?: string; setAt: number };
+  /** The older part of a long chat, summarized; `through` is the last message it covers. */
+  summary?: { text: string; through: ID; at: number };
   createdAt: number;
   updatedAt: number;
+}
+
+/** A Markdown document a bot wrote; the user can edit it. */
+export interface Page {
+  id: ID;
+  botId: ID;
+  conversationId?: ID;
+  title: string;
+  content: string;
+  /** The user changed it since the bot last wrote it. */
+  editedByUser?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SlideOutline {
+  title: string;
+  subtitle?: string;
+  slides: { title: string; bullets: string[]; notes?: string }[];
+  theme: "light" | "dark";
+}
+
+/** A file a bot shared from its workspace. */
+export interface SharedFile {
+  id: ID;
+  botId: ID;
+  conversationId?: ID;
+  name: string;
+  /** As the bot gave it, relative to `root` (the workspace it was working in). */
+  path: string;
+  root: string;
+  confine?: boolean;
+  /** On the hub's workspace, or on one device. */
+  where: "hub" | "device";
+  deviceId?: string;
+  deviceName?: string;
+  size?: number;
+  kind: "file" | "slides";
+  slides?: SlideOutline;
+  createdAt: number;
+}
+
+export interface PlanItem {
+  text: string;
+  status: "todo" | "doing" | "done" | "skipped";
 }
 
 /** A device asking the hub's runner to do something. Synced; the runner deletes it once handled. */
 export interface RunnerRequest {
   id: ID;
-  kind: "run" | "stop" | "approve" | "routine";
+  kind: "run" | "stop" | "approve" | "answer" | "routine";
   conversationId?: ID;
   toolCallId?: string;
-  answer?: "allow" | "always" | "deny";
+  answer?: "allow" | "always" | "always-bot" | "hour" | "today" | "deny";
+  /** kind "answer": what the user filled in on a form (secrets are saved separately, never here). */
+  answers?: Record<string, FormValue>;
   routineId?: ID;
   deviceId?: string;
   at: number;
@@ -176,6 +237,7 @@ export interface Attachment {
 export type ToolCallStatus =
   | "pending"
   | "awaiting-approval"
+  | "awaiting-input"
   | "reviewing"
   | "running"
   | "done"
@@ -198,6 +260,35 @@ export interface ToolCall {
   subagent?: SubagentRun;
   /** ask_bot: the bot that was asked and the chat it works in. */
   asked?: { botId: ID; conversationId: ID };
+  /** Why this action always asks first (a command that could wreck the machine). */
+  warning?: string;
+  /** write_page: the page it wrote. */
+  page?: { id: ID; title: string };
+  /** share_file, make_slides: the file it shared. */
+  file?: { id: ID; name: string };
+  /** ask_user: the form the bot wants filled in, and what the user answered. */
+  form?: ChatForm;
+}
+
+export interface FormQuestion {
+  id: string;
+  label: string;
+  kind: "choice" | "multi" | "text" | "long-text" | "number" | "date" | "secret";
+  options?: string[];
+  placeholder?: string;
+  required?: boolean;
+  /** secret: the name it's saved under (as a bot secret). */
+  saveAs?: string;
+}
+
+/** A form answer: text, a list of choices, or for secret questions the name of the saved secret. */
+export type FormValue = string | string[] | { secret: string };
+
+export interface ChatForm {
+  title: string;
+  questions: FormQuestion[];
+  answers?: Record<string, FormValue>;
+  answeredAt?: number;
 }
 
 export interface SubagentStep {
@@ -234,7 +325,7 @@ export interface ChatMessage {
   /** role=user written by another bot (ask_bot) rather than the user. */
   fromBotId?: ID;
   /** role=user that arrived from outside the app. */
-  via?: "telegram" | "webhook" | "email";
+  via?: "telegram" | "webhook" | "email" | "goal";
   status?: "streaming" | "done" | "error" | "stopped";
   error?: string;
   model?: string;
@@ -274,8 +365,21 @@ export interface McpServer {
   url?: string;
   /** HTTP header names (e.g. Authorization); values live in the secret store. */
   headerKeys?: string[];
+  /** Signed in with OAuth: where and as which client. Tokens live in the secret store. */
+  oauth?: OAuthClient;
   enabled: boolean;
   createdAt: number;
+}
+
+export interface OAuthClient {
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  registrationEndpoint?: string;
+  clientId: string;
+  /** A client secret is saved as `mcp:<id>:oauth-client`. */
+  hasClientSecret?: boolean;
+  scopes?: string;
+  resource?: string;
 }
 
 export type Schedule =
@@ -318,6 +422,10 @@ export interface ApprovalRule {
   /** For shell: a command prefix like "git status". Empty means any call of the tool. */
   pattern: string;
   decision: "allow" | "deny";
+  /** Only for this bot; unset means every bot. */
+  botId?: ID;
+  /** The rule stops applying after this time. */
+  expiresAt?: number;
   createdAt: number;
 }
 
@@ -351,7 +459,16 @@ export interface Settings {
   push?: { server: string; topic: string; hideText?: boolean };
   /** Chat with bots from Telegram. The bot token is the secret `telegram:token`. */
   telegram?: TelegramSettings;
+  /** Groups of bots in the sidebar, in order. Bots in none are listed after them. */
+  sidebarSections?: SidebarSection[];
   onboarded: boolean;
+}
+
+export interface SidebarSection {
+  id: ID;
+  name: string;
+  botIds: ID[];
+  collapsed?: boolean;
 }
 
 export interface TelegramSettings {
@@ -393,4 +510,8 @@ export const DEFAULT_TOOLS: BotToolToggles = {
   bots: true,
   browser: true,
   email: true,
+  forms: true,
+  planning: true,
+  pages: true,
+  profile: true,
 };

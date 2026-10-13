@@ -3,7 +3,7 @@
 //! (an isolated subagent's folder); otherwise the approval flow in the frontend
 //! decides what is allowed.
 
-use lantern_tools::fs::{self, DirEntry, Edit, GrepRequest, ReadResult};
+use lantern_tools::fs::{self, BytesResult, DirEntry, Edit, GrepRequest, ReadResult};
 use tauri::{AppHandle, Manager};
 
 fn restricted() -> bool {
@@ -42,6 +42,16 @@ pub async fn fs_find(root: String, pattern: String, path: Option<String>, limit:
 #[tauri::command]
 pub async fn fs_grep(request: GrepRequest, confine: Option<bool>) -> Result<String, String> {
     fs::grep(&request, confined(confine))
+}
+
+#[tauri::command]
+pub async fn fs_read_bytes(root: String, path: String, confine: Option<bool>) -> Result<BytesResult, String> {
+    fs::read_bytes(&root, &path, confined(confine))
+}
+
+#[tauri::command]
+pub async fn fs_write_bytes(root: String, path: String, base64: String, confine: Option<bool>) -> Result<String, String> {
+    fs::write_bytes(&root, &path, &base64, confined(confine))
 }
 
 #[tauri::command]

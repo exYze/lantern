@@ -11,6 +11,7 @@ import { hubDevices, hubToolInfo, type HubDevice } from "../lib/hub";
 import { capabilities, fs, httpRequest, isTauri, openExternal, pickFolder, platform, secrets } from "../lib/platform";
 import { addApprovalRule, deleteProvider, exportData, importData, saveProvider, toast, updateSettings, useApp, type View } from "../lib/store";
 import { disconnectHub, syncNow, type SyncState } from "../lib/sync";
+import { PAGE_TOOLS } from "../lib/pages";
 import { BUILTIN_TOOLS } from "../lib/tools";
 import { checkForUpdates } from "../lib/updates";
 import { timeAgo, uid } from "../lib/util";
@@ -359,6 +360,10 @@ function HubConnected({ sync }: { sync: SyncState }) {
 
 function ApprovalsSection() {
   const settings = useApp((s) => s.settings);
+  const bots = useApp((s) => s.bots);
+  const now = Date.now();
+  // Rules that ran out stay stored until the next one is added; they aren't shown.
+  const rules = settings.approvalRules.filter((r) => !r.expiresAt || r.expiresAt > now);
   const [tool, setTool] = useState("shell");
   const [pattern, setPattern] = useState("");
   const [decision, setDecision] = useState<"allow" | "deny">("deny");
@@ -377,14 +382,20 @@ function ApprovalsSection() {
       </div>
       <h3>Rules</h3>
       <p className="muted small">Rules apply in every mode. Deny rules win. A shell rule matches commands that start with its pattern.</p>
-      {settings.approvalRules.length ? (
+      {rules.length ? (
         <ul className="list">
-          {settings.approvalRules.map((r) => (
+          {rules.map((r) => (
             <li key={r.id}>
               <Pill tone={r.decision === "allow" ? "success" : "danger"}>{r.decision === "allow" ? "Allow" : "Deny"}</Pill>
-              <div className="list-main mono">
-                {r.tool}
-                {r.pattern ? `: ${r.pattern}` : ""}
+              <div className="list-main">
+                <span className="mono">
+                  {r.tool}
+                  {r.pattern ? `: ${r.pattern}` : ""}
+                </span>
+                <span className="muted small">
+                  {r.botId ? `Only ${bots.find((b) => b.id === r.botId)?.name ?? "a deleted bot"}` : "Every bot"}
+                  {r.expiresAt ? `, until ${new Date(r.expiresAt).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}` : ""}
+                </span>
               </div>
               <IconButton label="Delete rule" onClick={() => void updateSettings({ approvalRules: settings.approvalRules.filter((x) => x.id !== r.id) })}>
                 <Trash2 size={15} />
@@ -401,7 +412,7 @@ function ApprovalsSection() {
           <option value="allow">Allow</option>
         </select>
         <select className="select" value={tool} onChange={(e) => setTool(e.target.value)}>
-          {BUILTIN_TOOLS.filter((t) => ["write", "exec"].includes(String(t.risk))).map((t) => (
+          {[...BUILTIN_TOOLS, ...PAGE_TOOLS].filter((t) => ["write", "exec"].includes(String(t.risk))).map((t) => (
             <option key={t.name} value={t.name}>
               {t.name}
             </option>

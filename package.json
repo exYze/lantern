@@ -1,8 +1,8 @@
 {
   "name": "lantern",
   "private": true,
-  "version": "0.5.0",
-  "description": "Lantern \u00e2\u20ac\u201d an open-source, cross-platform AI bot app for open-source LLMs",
+  "version": "0.6.0",
+  "description": "Lantern â€” an open-source, cross-platform AI bot app for open-source LLMs",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -23,10 +23,15 @@
     "@tauri-apps/plugin-dialog": "2.8.2",
     "@tauri-apps/plugin-notification": "2.6.0",
     "@tauri-apps/plugin-opener": "2.7.1",
+    "heic2any": "0.0.4",
     "highlight.js": "11.12.0",
+    "jszip": "3.10.2",
     "katex": "0.19.0",
     "lucide-react": "1.55.0",
+    "mammoth": "1.13.0",
     "mermaid": "12.1.0",
+    "pdfjs-dist": "6.3.289",
+    "pptxgenjs": "4.0.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",
@@ -34,6 +39,7 @@
     "rehype-katex": "7.0.1",
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zustand": "5.0.15"
   },
   "devDependencies": {

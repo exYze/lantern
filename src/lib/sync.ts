@@ -13,7 +13,7 @@ import { SseParser } from "./sse";
 import { applyLiveMessage, C, refreshFromDb, updateSettings, useApp } from "./store";
 import { DEVICE_SETTINGS, type Bot, type ChatMessage, type McpServer, type Provider, type RunnerStatus, type Settings } from "./types";
 
-const LIST_COLLECTIONS = [C.providers, C.bots, C.conversations, C.skills, C.memories, C.mcp, C.routines, C.requests, C.runs, C.events];
+const LIST_COLLECTIONS = [C.providers, C.bots, C.conversations, C.skills, C.memories, C.mcp, C.routines, C.requests, C.runs, C.events, C.pages, C.files];
 const SECRET = "secret";
 const OUTBOX = "sync:outbox";
 const SEP = "\u001f";
@@ -68,6 +68,7 @@ export function knownSecretKeys(providers: Provider[], bots: Bot[], mcp: McpServ
   for (const s of mcp) {
     for (const k of s.envKeys ?? []) keys.push(`mcp:${s.id}:env:${k}`);
     for (const k of s.headerKeys ?? []) keys.push(`mcp:${s.id}:header:${k}`);
+    if (s.oauth) keys.push(`mcp:${s.id}:oauth`, `mcp:${s.id}:oauth-client`);
   }
   return keys;
 }

@@ -4,6 +4,9 @@ import { BotPanel } from "./components/BotPanel";
 import { ChatView } from "./components/ChatView";
 import { Sidebar } from "./components/Sidebar";
 import { ConfirmHost } from "./components/ui";
+import { ViewerHost } from "./components/Viewers";
+import { CommandPalette } from "./components/CommandPalette";
+import { quoteSelection } from "./components/ChatView";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { startScheduler } from "./lib/routines";
 import { useApp } from "./lib/store";
@@ -70,6 +73,22 @@ export function App() {
   const banner = useApp((s) => !!s.update && !s.update.dismissed);
   useTheme(theme);
 
+  // Ctrl/Cmd+K opens search; Ctrl/Cmd+L quotes the text selected in a chat.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "k") {
+        e.preventDefault();
+        useApp.setState((s) => ({ palette: !s.palette }));
+      } else if (k === "l" && quoteSelection()) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   useEffect(() => {
     if (!ready) return;
     startScheduler();
@@ -101,6 +120,8 @@ export function App() {
       ) : (
         <Onboarding />
       )}
+      <ViewerHost />
+      <CommandPalette />
       <ConfirmHost />
       <Toasts />
     </>

@@ -27,6 +27,8 @@ pub enum ToolRequest {
     FsFind { root: String, pattern: String, path: Option<String>, limit: Option<usize>, #[serde(default)] confine: bool },
     FsGrep { request: GrepRequest, #[serde(default)] confine: bool },
     FsDelete { root: String, path: String, #[serde(default)] confine: bool },
+    FsReadBytes { root: String, path: String, #[serde(default)] confine: bool },
+    FsWriteBytes { root: String, path: String, base64: String, #[serde(default)] confine: bool },
     ShellRun { request: ShellRequest },
     ShellCancel { id: String },
     /// One DevTools command for the bot's browser (`key`), started with `profile` if it isn't open.
@@ -173,6 +175,8 @@ impl LocalTools {
             }
             ToolRequest::FsGrep { request, confine } => blocking(move || to_json(fs::grep(&request, confine))).await,
             ToolRequest::FsDelete { root, path, confine } => blocking(move || to_json(fs::delete(&root, &path, confine))).await,
+            ToolRequest::FsReadBytes { root, path, confine } => blocking(move || to_json(fs::read_bytes(&root, &path, confine))).await,
+            ToolRequest::FsWriteBytes { root, path, base64, confine } => blocking(move || to_json(fs::write_bytes(&root, &path, &base64, confine))).await,
             ToolRequest::ShellRun { mut request } => {
                 if let Some(sb) = &request.sandbox {
                     self.check_sandbox(sb)?;

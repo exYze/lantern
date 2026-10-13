@@ -1,9 +1,10 @@
-import { CircleAlert, CircleCheck, LoaderCircle, Pencil, Plug, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { Button, confirmDialog, Empty, Field, IconButton, Modal, Pill, Toggle } from "../components/ui";
+import { CircleAlert, CircleCheck, KeyRound, LoaderCircle, LogIn, Pencil, Plug, Plus, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Button, confirmDialog, Field, IconButton, Modal, Pill, Toggle } from "../components/ui";
 import { disconnectMcp, getMcpClient, mcpStatus, secretKey, type McpTool } from "../lib/mcp";
+import { isSignedIn, redirectUri, signIn, signOut } from "../lib/oauth";
 import { capabilities, secrets } from "../lib/platform";
-import { deleteMcpServer, saveMcpServer, useApp } from "../lib/store";
+import { deleteMcpServer, saveMcpServer, toast, useApp } from "../lib/store";
 import type { McpServer } from "../lib/types";
 import { uid } from "../lib/util";
 import { PageHead } from "./PageHead";
@@ -27,6 +28,55 @@ const PRESETS: Preset[] = [
   { name: "GitHub", transport: "http", url: "https://api.githubcopilot.com/mcp/", headerKeys: ["Authorization"], note: "GitHub's hosted MCP server. Set Authorization to “Bearer <token>”." },
   { name: "Custom server", transport: "stdio", command: "", args: [], note: "Any MCP server: a local command, or a Streamable HTTP URL." },
 ];
+
+/** Hosted MCP servers you sign in to with one click (they register Lantern themselves). */
+export const APPS: { name: string; url: string; what: string; needsClient?: boolean }[] = [
+  { name: "Notion", url: "https://mcp.notion.com/mcp", what: "Search, read and write pages and databases" },
+  { name: "Linear", url: "https://mcp.linear.app/mcp", what: "Issues, projects and comments" },
+  { name: "Atlassian", url: "https://mcp.atlassian.com/v1/mcp", what: "Jira issues and Confluence pages" },
+  { name: "Zapier", url: "https://mcp.zapier.com/api/mcp/mcp", what: "Gmail, Google Calendar, Sheets and thousands more, through the actions you pick in Zapier" },
+  { name: "Sentry", url: "https://mcp.sentry.dev/mcp", what: "Errors, issues and releases" },
+  { name: "Figma", url: "https://mcp.figma.com/mcp", what: "Designs, components and comments" },
+  { name: "Canva", url: "https://mcp.canva.com/mcp", what: "Find and make designs" },
+  { name: "Airtable", url: "https://mcp.airtable.com/mcp", what: "Bases, tables and records" },
+  { name: "Todoist", url: "https://ai.todoist.net/mcp", what: "Tasks and projects" },
+  { name: "monday.com", url: "https://mcp.monday.com/mcp", what: "Boards, items and updates" },
+  { name: "Intercom", url: "https://mcp.intercom.com/mcp", what: "Conversations and contacts" },
+  { name: "Webflow", url: "https://mcp.webflow.com/mcp", what: "Sites, pages and CMS items" },
+  { name: "Vercel", url: "https://mcp.vercel.com", what: "Projects, deployments and logs" },
+  { name: "Supabase", url: "https://mcp.supabase.com/mcp", what: "Projects, databases and functions" },
+  { name: "Neon", url: "https://mcp.neon.tech/mcp", what: "Postgres projects and queries" },
+  { name: "Cloudflare", url: "https://observability.mcp.cloudflare.com/mcp", what: "Workers logs and analytics" },
+  { name: "Hugging Face", url: "https://huggingface.co/mcp", what: "Models, datasets and Spaces" },
+  { name: "Stripe", url: "https://mcp.stripe.com", what: "Customers, payments and invoices" },
+  { name: "PayPal", url: "https://mcp.paypal.com/mcp", what: "Invoices, orders and transactions" },
+  { name: "Square", url: "https://mcp.squareup.com/mcp", what: "Payments, orders and items" },
+  { name: "GitHub", url: "https://api.githubcopilot.com/mcp/", what: "Repositories, issues and pull requests (needs a GitHub OAuth app of your own)", needsClient: true },
+];
+
+/** Signs in to a server, with a Cancel for when you change your mind in the browser. */
+function useSignIn() {
+  const [busy, setBusy] = useState<string | null>(null);
+  const abort = useRef<AbortController | null>(null);
+  const run = async (server: McpServer, client?: { clientId?: string; clientSecret?: string }): Promise<McpServer | null> => {
+    abort.current = new AbortController();
+    setBusy(server.id);
+    try {
+      const signed = await signIn(server, { ...client, signal: abort.current.signal });
+      await saveMcpServer(signed);
+      await disconnectMcp(signed.id);
+      const c = await getMcpClient(signed, useApp.getState().settings.workspace || useApp.getState().defaultWorkspace);
+      toast(`Signed in to ${signed.name}: ${c.tools.length} tools. Switch it on for a bot in the bot's Plugins tab.`, "success");
+      return signed;
+    } catch (e) {
+      if (!abort.current?.signal.aborted) toast((e as Error).message, "error");
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  };
+  return { busy, run, cancel: () => abort.current?.abort() };
+}
 
 /** Presets can say {workspace}; no shell expands "~" for us. */
 function withWorkspace(args: string[] = []): string[] {
@@ -82,6 +132,13 @@ function ServerEditor({ server, onClose }: { server?: McpServer; onClose: () => 
   const [envValues, setEnvValues] = useState<Record<string, string>>({});
   const [headerValues, setHeaderValues] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState<null | "running" | { tools: McpTool[] } | { error: string }>(null);
+  const [clientId, setClientId] = useState(server?.oauth?.clientId ?? "");
+  const [clientSecret, setClientSecret] = useState("");
+  const [signedIn, setSignedIn] = useState(false);
+  const signing = useSignIn();
+  useEffect(() => {
+    void isSignedIn(draft).then(setSignedIn);
+  }, [draft]);
 
   const applyPreset = (p: Preset) => {
     const args = withWorkspace(p.args);
@@ -186,6 +243,63 @@ function ServerEditor({ server, onClose }: { server?: McpServer; onClose: () => 
               <input className="input mono" value={draft.url ?? ""} placeholder="https://example.com/mcp" onChange={(e) => setDraft({ ...draft, url: e.target.value })} />
             </Field>
             <KeyValues label="Headers" keys={draft.headerKeys ?? []} values={headerValues} onChange={(headerKeys, v) => (setDraft({ ...draft, headerKeys }), setHeaderValues(v))} />
+            <Field
+              label="Sign in"
+              hint={
+                <>
+                  For servers that use OAuth sign-in. Most register Lantern by themselves; for one that doesn't (like GitHub), create an OAuth app there with the redirect URL{" "}
+                  <code>{(() => {
+                    try {
+                      return redirectUri();
+                    } catch {
+                      return "<your hub>/oauth/callback";
+                    }
+                  })()}</code>{" "}
+                  and enter its client ID.
+                </>
+              }
+            >
+              <div className="stack-sm">
+                <div className="row wrap">
+                  <input className="input mono" placeholder="Client ID (only if needed)" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+                  <input className="input" type="password" autoComplete="off" placeholder="Client secret (if it has one)" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+                </div>
+                <div className="row wrap">
+                  <Button
+                    disabled={!valid || !!signing.busy}
+                    onClick={async () => {
+                      const s = build();
+                      await persist(s);
+                      const signed = await signing.run(s, { clientId: clientId.trim() || undefined, clientSecret: clientSecret || undefined });
+                      if (signed) {
+                        setDraft(signed);
+                        setSignedIn(true);
+                      }
+                    }}
+                  >
+                    {signing.busy ? <LoaderCircle size={15} className="spin" /> : <LogIn size={15} />} {signing.busy ? "Finish signing in in your browser…" : signedIn ? "Sign in again" : "Sign in"}
+                  </Button>
+                  {signing.busy && (
+                    <Button variant="ghost" onClick={signing.cancel}>
+                      Cancel
+                    </Button>
+                  )}
+                  {signedIn && !signing.busy && (
+                    <Button
+                      variant="ghost"
+                      onClick={async () => {
+                        await signOut(draft);
+                        await disconnectMcp(draft.id);
+                        setSignedIn(false);
+                      }}
+                    >
+                      Sign out
+                    </Button>
+                  )}
+                  {signedIn && <Pill tone="success">Signed in</Pill>}
+                </div>
+              </div>
+            </Field>
           </>
         )}
         <Toggle label="Enabled" checked={draft.enabled} onChange={(enabled) => setDraft({ ...draft, enabled })} />
@@ -207,6 +321,55 @@ function ServerEditor({ server, onClose }: { server?: McpServer; onClose: () => 
   );
 }
 
+/** The one-click catalog: hosted apps you sign in to. */
+function ConnectApps({ onCustom }: { onCustom: (s: McpServer) => void }) {
+  const servers = useApp((s) => s.mcpServers);
+  const hub = useApp((s) => s.hub);
+  const signing = useSignIn();
+  return (
+    <section className="connect-apps">
+      <h2>Connect an app</h2>
+      <p className="muted small">
+        Sign in once and your bots can use the app's tools{hub ? ", on every device and on your hub" : ""}. You sign in on the app's own page; Lantern never sees your password.
+        {!hub && " Signing in needs a Lantern Hub (Settings → Hub), because the app sends you back to it."}
+      </p>
+      <ul className="list">
+        {APPS.map((app) => {
+          const existing = servers.find((s) => s.url === app.url);
+          return (
+            <li key={app.url}>
+              <div className="list-main">
+                <strong>{app.name}</strong>
+                <span className="muted small">{app.what}</span>
+              </div>
+              {existing?.oauth ? (
+                <Pill tone="success">Connected</Pill>
+              ) : signing.busy === existing?.id || (signing.busy && !existing && signing.busy === `app:${app.url}`) ? (
+                <Button size="sm" variant="ghost" onClick={signing.cancel}>
+                  <LoaderCircle size={14} className="spin" /> Cancel
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  disabled={!hub || !!signing.busy}
+                  onClick={async () => {
+                    const server: McpServer = existing ?? { id: uid("mcp"), name: app.name, transport: "http", url: app.url, enabled: true, createdAt: Date.now() };
+                    if (!existing) await saveMcpServer(server);
+                    if (app.needsClient) return onCustom(server);
+                    await signing.run(server);
+                  }}
+                >
+                  <LogIn size={14} /> Connect
+                </Button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 export function PluginsView() {
   const servers = useApp((s) => s.mcpServers);
   const bots = useApp((s) => s.bots);
@@ -224,9 +387,7 @@ export function PluginsView() {
       />
       <div className="page-body">
         {!servers.length ? (
-          <Empty title="No plugins yet">
-            Add an MCP server, then switch it on for a bot in the bot's Plugins tab.
-          </Empty>
+          <p className="muted">No servers yet. Connect an app below, or add any MCP server with Add server. Then switch it on for a bot in the bot's Plugins tab.</p>
         ) : (
           <div className="stack">
             {servers.map((s) => {
@@ -239,6 +400,11 @@ export function PluginsView() {
                     <div className="row">
                       <strong>{s.name}</strong>
                       {!s.enabled && <Pill>Disabled</Pill>}
+                      {s.oauth && (
+                        <Pill>
+                          <KeyRound size={11} /> Signed in
+                        </Pill>
+                      )}
                       {st?.ok && <Pill tone="success">{st.toolCount} tools</Pill>}
                       {st && !st.ok && <Pill tone="danger">Error</Pill>}
                     </div>
@@ -265,6 +431,7 @@ export function PluginsView() {
             })}
           </div>
         )}
+        <ConnectApps onCustom={(s) => setEditing(s)} />
       </div>
       {editing && <ServerEditor server={editing === "new" ? undefined : editing} onClose={() => setEditing(null)} />}
     </div>

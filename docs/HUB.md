@@ -266,13 +266,42 @@ Both run on the runner, so they work with every app closed. Set them up in **Set
 Telegram on, and send the one-time link command the app shows to your new bot. Only linked chats can talk
 to your bots. In Telegram, send text, photos or voice notes (transcribed with your speech-to-text server);
 `/bots`, `/use <name>`, `/new` and `/stop` switch bots and chats. Approvals arrive with **Allow once**,
-**Always allow** and **Deny** buttons. The runner polls Telegram, so the hub needs no public address.
+**Always allow** (for that bot) and **Deny** buttons. A form with one question arrives as buttons, or as a
+question you answer with your next message; longer forms ask you to open Lantern. The runner polls
+Telegram, so the hub needs no public address.
 
 **Phone notifications.** Lantern can't wake a closed app on your phone, so the runner sends pushes through
 [ntfy](https://ntfy.sh) (open source; use ntfy.sh or your own server). Install the ntfy app and subscribe to
-the topic the app gives you. You get a push when a bot needs approval, when a routine finishes, and when a
-reply takes more than a minute. Treat the topic like a password, or use your own server with an access
+the topic the app gives you. You get a push when a bot needs approval or has a question for you, when a
+routine finishes, and when a reply takes more than a minute. Treat the topic like a password, or use your own server with an access
 token, and turn on **Hide what bots say** to keep replies off the notification service.
+
+## Forms, plans, pages and files
+
+These work the same on every device and on the runner, because they're stored in the shared environment:
+
+- **Forms.** When a bot asks with a form, every device shows it and any of them can answer. A secret answer
+  (a password, a code) is saved as one of the bot's secrets on the device where you typed it, then syncs like
+  any secret; the model only gets the secret's name.
+- **Plans and goals** are kept on the chat, so the checklist and the goal show on every device. A bot with
+  a goal keeps going on the runner after you close the app, up to four times its usual step limit.
+- **Long chats** get a running summary, stored on the chat, so every device and the runner work from the
+  same one.
+- **Pages** sync like chats. **Files** a bot shares (slide decks, reports) stay where they were made: files
+  made on the runner are in the hub's workspace, and every paired device opens them from there. Files made
+  on a device that isn't connected to the hub can only be opened on that device.
+
+## Signing in to apps
+
+**Plugins → Connect an app** signs you in to MCP apps such as Notion, Linear, Atlassian, Sentry or Zapier
+with OAuth. Lantern registers itself with the app (dynamic client registration, or a client ID you enter
+for apps like GitHub that need one), opens the app's sign-in page in your browser, and the app sends you
+back to `<hub>/oauth/callback`. The device that started the sign-in picks up the code from the hub,
+finishes it with its PKCE verifier and stores the tokens as secrets, so every device and the runner can use
+the app. Tokens refresh on their own; one device refreshes at a time.
+
+Signing in needs a hub, and the browser you sign in with must be able to open the hub's address (any
+device on your tailnet can).
 
 ## Sandboxes and subagents
 
@@ -323,6 +352,8 @@ web fetch run wherever the bot runs (the runner or your device), not in the sand
   bots' tools never run inside it (they go to `lantern-agent`).
 - **Webhooks** are the only thing besides downloads that the plain-HTTP listener serves. They need the
   routine's key (and its signature, when a signing secret is set) and can only start that routine.
+- **The sign-in callback** (`/oauth/callback`) only parks a code for ten minutes until a paired device
+  collects it, once. The code is useless without the verifier that only the signing-in device holds.
 
 ## Releases and auto-updates
 

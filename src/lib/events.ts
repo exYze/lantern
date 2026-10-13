@@ -1,12 +1,15 @@
 // Lifecycle events from bot runs, for code that reacts to them without being
 // part of the run: the hub runner's live view, Telegram replies and phone pushes.
 
+import type { ChatForm } from "./types";
+
 export type RunOutcome = "ok" | "error" | "stopped";
 
 export type AgentEvent =
   | { type: "run-start"; conversationId: string; botId: string }
   | { type: "run-end"; conversationId: string; botId: string; outcome: RunOutcome; routineId?: string; startedAt: number }
-  | { type: "approval"; conversationId: string; botId: string; callId: string; summary: string };
+  | { type: "approval"; conversationId: string; botId: string; callId: string; summary: string }
+  | { type: "input"; conversationId: string; botId: string; callId: string; form: ChatForm };
 
 export const agentListeners = new Set<(e: AgentEvent) => void>();
 

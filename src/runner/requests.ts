@@ -5,6 +5,7 @@
 import { runAgent, stopRun } from "../lib/agent";
 import { agentListeners } from "../lib/events";
 import { db } from "../lib/platform";
+import { answerForm } from "../lib/forms";
 import { runRoutine } from "../lib/routines";
 import { answerApproval, C, collectionWatchers, loadMessages, useApp } from "../lib/store";
 import type { RunnerRequest } from "../lib/types";
@@ -58,6 +59,9 @@ async function processRequests() {
           break;
         case "approve":
           if (r.toolCallId && r.answer) answerApproval(r.toolCallId, r.answer);
+          break;
+        case "answer":
+          if (r.toolCallId) answerForm(r.toolCallId, r.answers ?? null);
           break;
         case "routine": {
           const routine = useApp.getState().routines.find((x) => x.id === r.routineId);

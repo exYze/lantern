@@ -121,6 +121,49 @@ pub fn write(root: &str, path: &str, content: &str, restricted: bool) -> Result<
     Ok(format!("Wrote {} bytes to {}", content.len(), display(root, &full)))
 }
 
+/// Largest file read whole (documents, images, slide decks).
+const MAX_BYTES_READ: u64 = 25 * 1024 * 1024;
+
+/// A whole file, base64-encoded, for documents and other binary files.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BytesResult {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub base64: String,
+}
+
+pub fn read_bytes(root: &str, path: &str, restricted: bool) -> Result<BytesResult, String> {
+    use base64::Engine;
+    let full = resolve(root, path, restricted)?;
+    let meta = fs::metadata(&full).map_err(|e| format!("{}: {e}", full.display()))?;
+    if meta.is_dir() {
+        return Err(format!("{} is a directory", full.display()));
+    }
+    if meta.len() > MAX_BYTES_READ {
+        return Err(format!("{} is too large ({} bytes; the limit is {})", full.display(), meta.len(), MAX_BYTES_READ));
+    }
+    let bytes = fs::read(&full).map_err(|e| format!("{}: {e}", full.display()))?;
+    Ok(BytesResult {
+        path: display(root, &full),
+        name: full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        size: meta.len(),
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+pub fn write_bytes(root: &str, path: &str, base64_data: &str, restricted: bool) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(base64_data.trim()).map_err(|e| format!("not valid base64: {e}"))?;
+    let full = resolve(root, path, restricted)?;
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&full, &bytes).map_err(|e| format!("{}: {e}", full.display()))?;
+    Ok(format!("Wrote {} bytes to {}", bytes.len(), display(root, &full)))
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Edit {
@@ -387,5 +430,20 @@ mod tests {
         assert!(write(&root, "link/new.txt", "x", true).is_err());
         assert!(resolve(&root, "fresh/dir/file.txt", true).is_ok());
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bytes_round_trip_and_stay_in_the_workspace() {
+        let ws = std::env::temp_dir().join(format!("lantern-fs-bytes-{}", std::process::id()));
+        fs::create_dir_all(&ws).unwrap();
+        let root = ws.to_string_lossy();
+        // Zero bytes and invalid UTF-8 come back unchanged.
+        write_bytes(&root, "slides/deck.pptx", "UEsDBAAA/w==", true).unwrap();
+        let r = read_bytes(&root, "slides/deck.pptx", true).unwrap();
+        assert_eq!((r.name.as_str(), r.size, r.base64.as_str()), ("deck.pptx", 7, "UEsDBAAA/w=="));
+        assert!(write_bytes(&root, "x.bin", "not base64!", true).is_err());
+        assert!(write_bytes(&root, "../escape.bin", "AA==", true).is_err());
+        assert!(read_bytes(&root, "slides", true).is_err());
+        let _ = fs::remove_dir_all(ws);
     }
 }

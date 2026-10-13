@@ -1,5 +1,7 @@
 import { ArrowUp, FileText, Image as ImageIcon, LoaderCircle, Mic, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { docKind, extractText, heicToJpeg } from "../lib/documents";
+import { emojiByName, suggestEmoji } from "../lib/emoji";
 import { platform } from "../lib/platform";
 import { toast, useApp } from "../lib/store";
 import type { Attachment } from "../lib/types";
@@ -21,7 +23,25 @@ function readFile(file: File, as: "text" | "dataUrl"): Promise<string> {
   });
 }
 
+const MAX_DOCUMENT = 25 * 1024 * 1024;
+
 export async function fileToAttachment(file: File): Promise<Attachment> {
+  const kind = docKind(file.name, file.type);
+  if (kind === "heic") {
+    // iPhone photos: most models and screens can't show HEIC, so it goes as JPEG.
+    const jpeg = await heicToJpeg(file);
+    if (jpeg.size > MAX_IMAGE) throw new Error(`${file.name} is larger than ${formatBytes(MAX_IMAGE)}`);
+    const name = file.name.replace(/\.(heic|heif)$/i, ".jpg");
+    return { id: uid("att"), name, mime: "image/jpeg", size: jpeg.size, kind: "image", data: await readFile(new File([jpeg], name, { type: "image/jpeg" }), "dataUrl") };
+  }
+  if (kind === "pdf" || kind === "docx" || kind === "xlsx" || kind === "pptx") {
+    // Documents go as their text, which every model can read.
+    if (file.size > MAX_DOCUMENT) throw new Error(`${file.name} is larger than ${formatBytes(MAX_DOCUMENT)}; put it in the workspace and ask the bot to read it`);
+    const doc = await extractText(new Uint8Array(await file.arrayBuffer()), file.name, file.type);
+    const text = doc.text.trim() || (kind === "pdf" ? "(No text found: this PDF may be scanned images.)" : "(empty)");
+    const clipped = text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n[… the rest of the document was left out]` : text;
+    return { id: uid("att"), name: file.name, mime: file.type || "application/octet-stream", size: file.size, kind: "text", data: clipped };
+  }
   if (file.type.startsWith("image/") && !file.type.includes("svg")) {
     if (file.size > MAX_IMAGE) throw new Error(`${file.name} is larger than ${formatBytes(MAX_IMAGE)}`);
     return { id: uid("att"), name: file.name, mime: file.type, size: file.size, kind: "image", data: await readFile(file, "dataUrl") };
@@ -30,7 +50,7 @@ export async function fileToAttachment(file: File): Promise<Attachment> {
     if (file.size > MAX_TEXT) throw new Error(`${file.name} is larger than ${formatBytes(MAX_TEXT)}; ask the bot to read it from the workspace instead`);
     return { id: uid("att"), name: file.name, mime: file.type || "text/plain", size: file.size, kind: "text", data: await readFile(file, "text") };
   }
-  throw new Error(`${file.name}: only text and image files can be attached`);
+  throw new Error(`${file.name}: only text, images, PDF, Word, Excel and PowerPoint files can be attached`);
 }
 
 export function Composer({ placeholder, running, onSend, onStop, seed }: { placeholder: string; running: boolean; onSend: (text: string, attachments: Attachment[]) => void; onStop: () => void; seed?: { text: string; n: number } }) {
@@ -44,6 +64,55 @@ export function Composer({ placeholder, running, onSend, onStop, seed }: { place
   const fileInput = useRef<HTMLInputElement>(null);
   const settings = useApp((s) => s.settings);
   const providers = useApp((s) => s.providers);
+  const insert = useApp((s) => s.composerInsert);
+  const [emoji, setEmoji] = useState<{ start: number; options: [string, string][]; active: number } | null>(null);
+
+  // Quotes (and anything else) sent to the message box.
+  useEffect(() => {
+    if (!insert) return;
+    setText((t) => (t.trim() ? `${t.replace(/\s*$/, "")}\n\n${insert.text}` : insert.text));
+    setTimeout(() => {
+      const el = area.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }, 0);
+  }, [insert]);
+
+  /** Typing `:name` suggests emoji; a finished `:name:` becomes the emoji. */
+  const onType = (value: string, caret: number) => {
+    const before = value.slice(0, caret);
+    const done = before.match(/(^|\s):([a-z0-9_+-]{2,}):$/i);
+    if (done) {
+      const char = emojiByName(done[2]);
+      if (char) {
+        const start = caret - done[2].length - 2;
+        const next = value.slice(0, start) + char + value.slice(caret);
+        setText(next);
+        setEmoji(null);
+        setTimeout(() => area.current?.setSelectionRange(start + char.length, start + char.length), 0);
+        return;
+      }
+    }
+    setText(value);
+    const m = before.match(/(^|\s):([a-z0-9_+-]{2,})$/i);
+    const options = m ? suggestEmoji(m[2]) : [];
+    setEmoji(m && options.length ? { start: caret - m[2].length - 1, options, active: 0 } : null);
+  };
+
+  const pickEmoji = (char: string) => {
+    const el = area.current;
+    if (!emoji || !el) return;
+    const caret = el.selectionStart;
+    const next = text.slice(0, emoji.start) + char + " " + text.slice(caret);
+    setText(next);
+    setEmoji(null);
+    const at = emoji.start + char.length + 1;
+    setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(at, at);
+    }, 0);
+  };
 
   useEffect(() => {
     if (seed) {
@@ -76,6 +145,23 @@ export function Composer({ placeholder, running, onSend, onStop, seed }: { place
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (emoji) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = emoji.options.length;
+        setEmoji({ ...emoji, active: (emoji.active + (e.key === "ArrowDown" ? 1 : n - 1)) % n });
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        pickEmoji(emoji.options[emoji.active][1]);
+        return;
+      }
+      if (e.key === "Escape") {
+        setEmoji(null);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !platform.mobile) {
       e.preventDefault();
       send();
@@ -164,6 +250,15 @@ export function Composer({ placeholder, running, onSend, onStop, seed }: { place
         </div>
       ) : (
         <div className="composer-row">
+          {emoji && (
+            <div className="emoji-suggest" role="listbox">
+              {emoji.options.map(([name, char], i) => (
+                <button key={name} role="option" aria-selected={i === emoji.active} className={i === emoji.active ? "active" : ""} onMouseDown={(e) => e.preventDefault()} onClick={() => pickEmoji(char)}>
+                  <span className="emoji-char">{char}</span> :{name}:
+                </button>
+              ))}
+            </div>
+          )}
           <IconButton label="Attach files" onClick={() => fileInput.current?.click()}>
             <Paperclip size={18} />
           </IconButton>
@@ -182,8 +277,9 @@ export function Composer({ placeholder, running, onSend, onStop, seed }: { place
             rows={1}
             value={text}
             placeholder={transcribing ? "Transcribing…" : placeholder}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => onType(e.target.value, e.target.selectionStart)}
             onKeyDown={onKeyDown}
+            onBlur={() => setTimeout(() => setEmoji(null), 150)}
             onPaste={(e) => {
               const files = Array.from(e.clipboardData.files);
               if (files.length) {

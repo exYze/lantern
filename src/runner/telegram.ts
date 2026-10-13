@@ -8,6 +8,8 @@ import { httpRequest, secrets } from "../lib/platform";
 import { appendMessage, createConversation, messagesOf, toast, updateSettings, useApp } from "../lib/store";
 import { stopRun } from "../lib/agent";
 import { answerApproval } from "../lib/store";
+import { answerForm } from "../lib/forms";
+import type { FormQuestion } from "../lib/types";
 import type { Attachment, Bot, ChatMessage, TelegramSettings } from "../lib/types";
 import { uid } from "../lib/util";
 import { transcribe } from "../lib/voice";
@@ -24,6 +26,10 @@ let generation = 0;
 const approvalIds = new Map<number, { callId: string; conversationId: string }>();
 let nextApproval = 1;
 const typing = new Map<string, ReturnType<typeof setInterval>>();
+/** One-question forms answered from Telegram: by button (choices) or by the next message (text). */
+const pendingForms = new Map<number, { callId: string; question: FormQuestion; n: number }>();
+const formIds = new Map<number, { callId: string; question: FormQuestion; chatId: number }>();
+let nextForm = 1;
 const warned = new Set<number>();
 
 async function tg<T = any>(method: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
@@ -193,6 +199,15 @@ async function handleMessage(msg: any) {
 
   if (text.startsWith("/") && (await handleCommand(chatId, text))) return;
 
+  // The answer to a question the bot asked here.
+  const pending = pendingForms.get(chatId);
+  if (pending && text && !msg.photo && !msg.voice) {
+    pendingForms.delete(chatId);
+    formIds.delete(pending.n);
+    answerForm(pending.callId, { [pending.question.id]: text });
+    return;
+  }
+
   const target = await conversationFor(chatId);
   if (!target) return;
   const attachments: Attachment[] = [];
@@ -233,12 +248,26 @@ async function handleMessage(msg: any) {
 async function handleCallback(q: any) {
   const chatId: number | undefined = q.message?.chat?.id;
   const [kind, n, answer] = String(q.data ?? "").split(":");
+  if (kind === "fm") {
+    const f = formIds.get(Number(n));
+    const option = f?.question.options?.[Number(answer)];
+    if (!f || !chatId || f.chatId !== chatId || option === undefined) {
+      await tg("answerCallbackQuery", { callback_query_id: q.id, text: "This question has expired." }).catch(() => {});
+      return;
+    }
+    formIds.delete(Number(n));
+    pendingForms.delete(chatId);
+    answerForm(f.callId, { [f.question.id]: option });
+    await tg("answerCallbackQuery", { callback_query_id: q.id, text: option }).catch(() => {});
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    return;
+  }
   const pending = approvalIds.get(Number(n));
   if (kind !== "ap" || !chatId || !settingsOf()?.chats.some((c) => c.id === chatId) || !pending) {
     await tg("answerCallbackQuery", { callback_query_id: q.id, text: "This request has expired." }).catch(() => {});
     return;
   }
-  const map: Record<string, "allow" | "always" | "deny"> = { a: "allow", A: "always", d: "deny" };
+  const map: Record<string, "allow" | "always-bot" | "deny"> = { a: "allow", A: "always-bot", d: "deny" };
   answerApproval(pending.callId, map[answer] ?? "deny");
   approvalIds.delete(Number(n));
   await tg("answerCallbackQuery", { callback_query_id: q.id, text: answer === "d" ? "Denied" : "Allowed" }).catch(() => {});
@@ -339,6 +368,19 @@ export function startTelegram() {
       void say(chatId, `**${bot?.name ?? "Your bot"}** wants to: ${e.summary}`, {
         reply_markup: { inline_keyboard: [[{ text: "Allow once", callback_data: `ap:${n}:a` }, { text: "Always allow", callback_data: `ap:${n}:A` }, { text: "Deny", callback_data: `ap:${n}:d` }]] },
       }).catch((err) => console.warn("telegram: approval message failed:", err));
+    } else if (e.type === "input") {
+      const bot = useApp.getState().bots.find((b) => b.id === e.botId);
+      const [only] = e.form.questions;
+      const simple = e.form.questions.length === 1 && only.kind !== "secret" && only.kind !== "multi";
+      if (!simple) {
+        void say(chatId, `**${bot?.name ?? "Your bot"}** needs a few answers (“${e.form.title}”). Open Lantern to fill in the form.`).catch(() => {});
+        return;
+      }
+      const n = nextForm++;
+      formIds.set(n, { callId: e.callId, question: only, chatId });
+      pendingForms.set(chatId, { callId: e.callId, question: only, n });
+      const buttons = only.kind === "choice" ? only.options!.map((o, i) => [{ text: o.slice(0, 60), callback_data: `fm:${n}:${i}` }]) : null;
+      void say(chatId, `**${bot?.name ?? "Your bot"}** asks: ${only.label}${buttons ? "" : "\n\nReply with your answer."}`, buttons ? { reply_markup: { inline_keyboard: buttons } } : {}).catch(() => {});
     } else if (e.type === "run-end") {
       stopTyping(e.conversationId);
       if (e.outcome === "stopped") return;

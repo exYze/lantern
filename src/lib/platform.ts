@@ -69,7 +69,7 @@ export let platform: PlatformInfo = {
   os: "web",
   arch: "",
   mobile: false,
-  version: "0.5.0",
+  version: "0.6.0",
   shell: null,
   secretBackend: "browser-storage",
 };
@@ -389,6 +389,13 @@ export interface ReadResult {
   truncated: boolean;
 }
 
+export interface BytesResult {
+  path: string;
+  name: string;
+  size: number;
+  base64: string;
+}
+
 export interface DirEntry {
   name: string;
   isDir: boolean;
@@ -435,6 +442,15 @@ export const fs = {
   delete(root: string, path: string, confine?: boolean) {
     if (!isTauri) notAvailable("Deleting files");
     return invoke<string>("fs_delete", { root, path, confine });
+  },
+  /** A whole file as base64 (documents, images, slide decks). */
+  readBytes(root: string, path: string, confine?: boolean) {
+    if (!isTauri) notAvailable("Reading files");
+    return invoke<BytesResult>("fs_read_bytes", { root, path, confine });
+  },
+  writeBytes(root: string, path: string, base64: string, confine?: boolean) {
+    if (!isTauri) notAvailable("Writing files");
+    return invoke<string>("fs_write_bytes", { root, path, base64, confine });
   },
   async defaultWorkspace(): Promise<string> {
     if (!isTauri) return "";

@@ -1,11 +1,12 @@
-import { ChevronRight, Clock, Monitor, Plus } from "lucide-react";
+import { ChevronRight, Clock, Link2, Monitor, Plus } from "lucide-react";
 import { useState } from "react";
 import { Avatar } from "../components/Avatar";
-import { Button, Modal } from "../components/ui";
+import { Button, Field, Modal } from "../components/ui";
+import { createFromShared, readTemplate, type SharedTemplate } from "../lib/share";
 import { createBlankBot, createBotFromTemplate } from "../lib/bots";
 import { capabilities } from "../lib/platform";
 import { describeSchedule } from "../lib/schedule";
-import { useApp } from "../lib/store";
+import { toast, useApp } from "../lib/store";
 import { TEMPLATES, type BotTemplate } from "../lib/templates";
 import { PageHead } from "./PageHead";
 
@@ -13,6 +14,7 @@ export function TemplatesView() {
   const hasHub = useApp((s) => !!s.hub);
   const [category, setCategory] = useState<string>("All");
   const [open, setOpen] = useState<BotTemplate | null>(null);
+  const [importing, setImporting] = useState(false);
   const categories = ["All", ...new Set(TEMPLATES.map((t) => t.category))];
   const shown = TEMPLATES.filter((t) => category === "All" || t.category === category);
 
@@ -58,8 +60,16 @@ export function TemplatesView() {
               <span className="catalogue-desc">Write your own instructions from scratch.</span>
             </span>
           </button>
+          <button className="catalogue-row catalogue-blank" onClick={() => setImporting(true)}>
+            <Link2 size={18} />
+            <span className="catalogue-text">
+              <span className="catalogue-name">Add from a link</span>
+              <span className="catalogue-desc">Someone shared a bot with you? Paste its template link.</span>
+            </span>
+          </button>
         </div>
       </div>
+      {importing && <ImportTemplate onClose={() => setImporting(false)} />}
       {open && (
         <Modal
           title={
@@ -106,5 +116,80 @@ export function TemplatesView() {
         </Modal>
       )}
     </div>
+  );
+}
+
+function ImportTemplate({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState("");
+  const [found, setFound] = useState<SharedTemplate | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <Modal
+      title="Add a bot from a link"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          {found ? (
+            <Button
+              variant="primary"
+              onClick={async () => {
+                await createFromShared(found);
+                toast(`${found.name} is ready.`, "success");
+                onClose();
+              }}
+            >
+              Create {found.name}
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              disabled={!text.trim()}
+              onClick={async () => {
+                setError(null);
+                try {
+                  setFound(await readTemplate(text));
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            >
+              Read the link
+            </Button>
+          )}
+        </>
+      }
+    >
+      {found ? (
+        <div className="form">
+          <div className="row">
+            <Avatar spec={found.avatar} size={44} />
+            <div>
+              <strong>{found.name}</strong>
+              <div className="muted small">{found.tagline}</div>
+            </div>
+          </div>
+          <h3>Instructions</h3>
+          <p className="muted pre-wrap">{found.instructions}</p>
+          {(found.skills.length > 0 || found.routines.length > 0) && (
+            <p className="small">
+              Comes with {found.skills.length ? `${found.skills.length} skill${found.skills.length === 1 ? "" : "s"}` : ""}
+              {found.skills.length && found.routines.length ? " and " : ""}
+              {found.routines.length ? `${found.routines.length} routine${found.routines.length === 1 ? "" : "s"} (paused)` : ""}.
+            </p>
+          )}
+          <p className="muted small">It uses your default model and asks before risky actions, like any bot.</p>
+        </div>
+      ) : (
+        <div className="form">
+          <Field label="Template link">
+            <textarea className="input mono" rows={4} placeholder="https://exyze.github.io/lantern/t/#z…" value={text} onChange={(e) => setText(e.target.value)} />
+          </Field>
+          {error && <p className="notice notice-error">{error}</p>}
+        </div>
+      )}
+    </Modal>
   );
 }

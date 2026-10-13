@@ -1,10 +1,7 @@
+import { AVATAR_COLORS, AVATAR_EYES, AVATAR_MOUTHS, AVATAR_SHAPES } from "../lib/avatar";
 import type { AvatarEyes, AvatarMouth, AvatarShape, AvatarSpec } from "../lib/types";
 
-export const AVATAR_SHAPES: AvatarShape[] = ["circle", "squircle", "hexagon", "flower", "diamond", "shield"];
-export const AVATAR_EYES: AvatarEyes[] = ["dots", "happy", "wink", "wide", "sleepy", "visor"];
-export const AVATAR_MOUTHS: AvatarMouth[] = ["smile", "grin", "flat", "open", "tongue", "none"];
-/** Enamel paint colors, as on old lanterns and tool tins. */
-export const AVATAR_COLORS = ["#D9A21B", "#C8462B", "#E8630A", "#2E5C8A", "#2F6B4F", "#5E7D3A", "#4E7F8C", "#8C6A4F", "#B85C38", "#7A8B7F", "#C9CEC7", "#8E2F25"];
+export { AVATAR_COLORS, AVATAR_EYES, AVATAR_MOUTHS, AVATAR_SHAPES };
 
 const INK = "#191D1B";
 const CHALK = "#F3F1EA";

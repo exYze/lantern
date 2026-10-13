@@ -1,7 +1,7 @@
 // Lantern Hub client: connecting and pairing, the authenticated API, and bot
 // tools (files, terminal) that run in the hub's shared workspace.
 
-import { db, httpRequest, platform, secrets, type DirEntry, type GrepRequest, type ReadResult, type ShellResult } from "./platform";
+import { db, httpRequest, platform, secrets, type BytesResult, type DirEntry, type GrepRequest, type ReadResult, type ShellResult } from "./platform";
 import { useApp } from "./store";
 import type { Bot } from "./types";
 import { uid } from "./util";
@@ -234,6 +234,8 @@ export const hubFs = {
   find: (root: string, pattern: string, path?: string, limit?: number, confine?: boolean) => hubTool<string[]>({ op: "fs_find", root, pattern, path, limit, confine }),
   grep: (request: GrepRequest, confine?: boolean) => hubTool<string>({ op: "fs_grep", request, confine }),
   delete: (root: string, path: string, confine?: boolean) => hubTool<string>({ op: "fs_delete", root, path, confine }),
+  readBytes: (root: string, path: string, confine?: boolean) => hubTool<BytesResult>({ op: "fs_read_bytes", root, path, confine }, 180_000),
+  writeBytes: (root: string, path: string, base64: string, confine?: boolean) => hubTool<string>({ op: "fs_write_bytes", root, path, base64, confine }, 180_000),
 };
 
 /** A bot's browser on the hub: `key` names it, `profile` keeps its sign-ins. */

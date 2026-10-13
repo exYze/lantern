@@ -35,6 +35,8 @@ function plan(body) {
     const risky = /rm -rf|del |format|shutdown/.test(textOf(last?.content));
     return { text: JSON.stringify({ verdict: risky ? "ask" : "allow", reason: risky ? "Deletes files." : "Routine, reversible action." }) };
   }
+  if (system.includes("running summary")) return { text: "- The user is testing how Lantern summarizes long chats." };
+  if (system.includes("drawn avatars")) return { text: JSON.stringify({ shape: "hexagon", color: "rust", eyes: "happy", mouth: "grin", badge: "🦉" }) };
 
   if (last?.role === "tool") {
     const result = textOf(last.content);
@@ -45,6 +47,23 @@ function plan(body) {
   }
 
   const tool = (name, args) => (hasTool(name) ? { toolCalls: [{ name, args }] } : null);
+  // Goals: the agent's nudge asks to keep going, and the mock finishes.
+  if (ask.startsWith("keep going toward the goal")) return tool("finish_goal", { status: "done" }) ?? { text: "Done." };
+  if (ask.includes("pursue a goal")) {
+    return hasTool("set_goal")
+      ? { toolCalls: [{ name: "set_goal", args: { objective: "Tidy the test workspace" } }, { name: "update_plan", args: { items: [{ text: "Look around", status: "done" }, { text: "Tidy up", status: "doing" }] } }] }
+      : { text: "No planning tools." };
+  }
+  // A command that always asks with a warning (the device doesn't exist, so it's harmless if run).
+  if (ask.includes("format the spare disk")) return tool("shell", { command: "mkfs.ext4 /dev/sdz9" }) ?? { text: "No shell here." };
+  if (ask.includes("pick one")) return tool("ask_user", { title: "Quick question", questions: [{ id: "where", label: "Where to?", kind: "choice", options: ["Rome", "Oslo"] }] }) ?? { text: "No forms." };
+  if (ask.includes("ask me")) {
+    return tool("ask_user", { title: "Trip details", questions: [{ id: "where", label: "Where to?", kind: "choice", options: ["Rome", "Oslo"], required: true }, { id: "code", label: "Booking code", kind: "secret", save_as: "BOOKING_CODE" }] }) ?? { text: "No forms." };
+  }
+  if (ask.includes("make slides")) return tool("make_slides", { title: "Lantern test deck", subtitle: "From the e2e test", slides: [{ title: "Why", bullets: ["Bots on your own models", "Asks before it acts"] }] }) ?? { text: "No slides." };
+  if (ask.includes("read the pdf")) return tool("read_document", { path: "hello.pdf" }) ?? { text: "No documents." };
+  if (ask.includes("write a page")) return tool("write_page", { title: "Test notes", content: "# Test notes\n\n- one\n- two" }) ?? { text: "No pages." };
+  if (ask.includes("change your look")) return tool("update_profile", { color: "rust", shape: "hexagon", badge: "🦉" }) ?? { text: "I can't change my look." };
   // A bot asked by another bot (ask_bot) answers it plainly.
   if (system.includes("which needs your help")) return { text: `Happy to help: ${ask.slice(0, 80)}. The answer is 4.` };
   const askBot = ask.match(/ask (\w+)/);

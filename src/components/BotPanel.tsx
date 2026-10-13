@@ -1,6 +1,8 @@
-import { Dices, FolderOpen, KeyRound, Pencil, Play, Plus, Trash2, X } from "lucide-react";
+import { Dices, FolderOpen, KeyRound, Pencil, Play, Plus, Share2, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { designAvatar } from "../lib/avatar";
+import { shareLink, templateFromBot } from "../lib/share";
 import { browserAvailable } from "../lib/browser";
 import { hubConnection, hubMail, usesHub } from "../lib/hub";
 import { emailSecretKey, mailAccount } from "../lib/mail";
@@ -9,17 +11,20 @@ import { describeRoutineTrigger, runRoutine } from "../lib/routines";
 import { teamFor } from "../lib/team";
 import { toolEnabled } from "../lib/tools";
 import { nextRun } from "../lib/schedule";
+import { db } from "../lib/platform";
+import { forgetSharedFile } from "../lib/pages";
 import { addMemory, botSecretKey, deleteBot, deleteMemory, deleteRoutine, deleteSkill, saveBot, saveRoutine, saveSkill, setView, toast, updateSettings, useApp, workspaceFor } from "../lib/store";
-import type { ApprovalMode, Bot, BotEmail, BotToolToggles, Routine, Skill } from "../lib/types";
-import { timeAgo, uid } from "../lib/util";
+import type { ApprovalMode, Bot, BotEmail, BotToolToggles, ChatMessage, Routine, Skill } from "../lib/types";
+import { formatBytes, timeAgo, uid } from "../lib/util";
 import { BrowserView } from "./BrowserView";
+import { openFile, openPage } from "./Viewers";
 import { APPROVAL_MODES } from "./ChatView";
 import { AVATAR_COLORS, AVATAR_EYES, AVATAR_MOUTHS, AVATAR_SHAPES, Avatar, randomAvatar } from "./Avatar";
 import { ModelPicker } from "./ModelPicker";
 import { RoutineEditor } from "./RoutineEditor";
 import { Button, confirmDialog, Empty, Field, IconButton, Modal, Tabs, Toggle } from "./ui";
 
-type Tab = "profile" | "model" | "tools" | "skills" | "memory" | "plugins" | "secrets" | "routines" | "browser" | "email";
+type Tab = "profile" | "library" | "model" | "tools" | "skills" | "memory" | "plugins" | "secrets" | "routines" | "browser" | "email";
 
 /** The primary bot's daily check-in: it looks over recent work and offers to take things off your plate. */
 export const CHECK_IN_PROMPT =
@@ -38,6 +43,10 @@ const TOOL_INFO: { key: keyof BotToolToggles; label: string; description: string
   { key: "bots", label: "Other bots", description: "Ask your other bots for help, or hand them a whole task." },
   { key: "browser", label: "Browser", description: "Use a web browser on your hub for sites that need clicking or signing in. You can watch and take over." },
   { key: "email", label: "Email", description: "Read and send mail from this bot's own inbox (set it up in the Email tab)." },
+  { key: "forms", label: "Forms", description: "Ask you with a form in the chat: choices, dates, and secret fields it never sees." },
+  { key: "planning", label: "Plans and goals", description: "Keep a checklist above the chat, and keep going until a goal is done." },
+  { key: "pages", label: "Pages and files", description: "Write pages you can read and edit, share files, make slide decks, and read PDFs, Word and Excel files." },
+  { key: "profile", label: "Its own look", description: "Change its name, tagline and avatar when you ask." },
 ];
 
 export function BotPanel() {
@@ -67,6 +76,7 @@ export function BotPanel() {
         onChange={setTab}
         tabs={[
           { id: "profile", label: "Profile" },
+          { id: "library", label: "Library" },
           { id: "model", label: "Model" },
           { id: "tools", label: "Tools" },
           { id: "skills", label: "Skills" },
@@ -80,6 +90,7 @@ export function BotPanel() {
       />
       <div className="details-body">
         {tab === "profile" && <ProfileTab bot={bot} />}
+        {tab === "library" && <LibraryTab bot={bot} />}
         {tab === "model" && <ModelTab bot={bot} />}
         {tab === "tools" && <ToolsTab bot={bot} />}
         {tab === "skills" && <SkillsTab bot={bot} />}
@@ -145,6 +156,7 @@ function ProfileTab({ bot }: { bot: Bot }) {
               <Dices size={14} /> Surprise me
             </Button>
           </div>
+          <DescribeLook bot={bot} />
         </div>
       </div>
       <Field label="Name">
@@ -158,6 +170,8 @@ function ProfileTab({ bot }: { bot: Bot }) {
       </Field>
       <Toggle label="Pin to top" checked={!!bot.pinned} onChange={(pinned) => void saveBot({ ...bot, pinned })} />
       <PrimaryToggle bot={bot} />
+      <SectionPicker bot={bot} />
+      <ShareTemplate bot={bot} />
       <div className="danger-zone">
         <Button
           variant="danger"
@@ -170,6 +184,133 @@ function ProfileTab({ bot }: { bot: Bot }) {
           <Trash2 size={15} /> Delete bot
         </Button>
       </div>
+    </div>
+  );
+}
+
+/** Shares the bot as a template link anyone can add to their own Lantern. */
+function ShareTemplate({ bot }: { bot: Bot }) {
+  const [open, setOpen] = useState(false);
+  const [withSkills, setWithSkills] = useState(true);
+  const [withRoutines, setWithRoutines] = useState(true);
+  const [link, setLink] = useState("");
+  useEffect(() => {
+    if (open) void shareLink(templateFromBot(bot, { skills: withSkills, routines: withRoutines })).then(setLink);
+  }, [open, bot, withSkills, withRoutines]);
+  return (
+    <>
+      <div>
+        <Button size="sm" onClick={() => setOpen(true)}>
+          <Share2 size={14} /> Share as a template
+        </Button>
+      </div>
+      {open && (
+        <Modal title={`Share ${bot.name} as a template`} onClose={() => setOpen(false)}>
+          <div className="form">
+            <p className="muted small">
+              Anyone with this link can add their own copy of {bot.name} to Lantern: its name, look, instructions and tools. The template is inside the link itself, so nothing is uploaded
+              anywhere. Secrets, memories, chats, inboxes and your model choice are never included.
+            </p>
+            <Toggle label="Include its private skills" checked={withSkills} onChange={setWithSkills} />
+            <Toggle label="Include its scheduled routines" description="They arrive paused." checked={withRoutines} onChange={setWithRoutines} />
+            <div className="row">
+              <input className="input mono" readOnly value={link} onFocus={(e) => e.currentTarget.select()} />
+              <Button
+                variant="primary"
+                disabled={!link}
+                onClick={() => {
+                  void navigator.clipboard?.writeText(link);
+                  toast("Link copied.", "success");
+                }}
+              >
+                Copy
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+/** Which sidebar section the bot is listed in. */
+function SectionPicker({ bot }: { bot: Bot }) {
+  const sections = useApp((s) => s.settings.sidebarSections ?? []);
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
+  const current = sections.find((s) => s.botIds.includes(bot.id));
+  const move = (to: string | null, extra: typeof sections = []) => {
+    const next = [...sections, ...extra].map((s) => ({ ...s, botIds: s.id === to ? [...s.botIds.filter((id) => id !== bot.id), bot.id] : s.botIds.filter((id) => id !== bot.id) }));
+    void updateSettings({ sidebarSections: next });
+  };
+  return (
+    <Field label="Sidebar section" hint="Group bots in the sidebar, like Work and Home. Double-click a section's name there to rename it.">
+      {naming ? (
+        <div className="row">
+          <input className="input" autoFocus placeholder="Section name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={!name.trim()}
+            onClick={() => {
+              const id = uid("section");
+              move(id, [{ id, name: name.trim(), botIds: [] }]);
+              setNaming(false);
+              setName("");
+            }}
+          >
+            Add
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setNaming(false)}>
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <select
+          className="select"
+          value={current?.id ?? ""}
+          onChange={(e) => (e.target.value === "__new" ? setNaming(true) : move(e.target.value || null))}
+        >
+          <option value="">None</option>
+          {sections.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+          <option value="__new">New section…</option>
+        </select>
+      )}
+    </Field>
+  );
+}
+
+/** Turns a few words ("a calm owl who likes maps") into an avatar, using the bot's model. */
+function DescribeLook({ bot }: { bot: Bot }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const make = async () => {
+    setBusy(true);
+    try {
+      const avatar = await designAvatar(bot, text.trim());
+      await saveBot({ ...bot, avatar });
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="option-row">
+      <input
+        className="input"
+        placeholder="Or describe its look: a calm owl who likes maps"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && text.trim() && !busy && void make()}
+      />
+      <Button size="sm" disabled={!text.trim() || busy} onClick={() => void make()}>
+        {busy ? "Drawing…" : "Make it"}
+      </Button>
     </div>
   );
 }
@@ -702,6 +843,96 @@ function EmailTab({ bot }: { bot: Bot }) {
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Links in recent replies, newest first, with the words they were linked from. */
+async function recentLinks(botId: string): Promise<{ url: string; text: string; at: number }[]> {
+  const convs = useApp
+    .getState()
+    .conversations.filter((c) => c.botId === botId)
+    .slice(0, 15);
+  const seen = new Map<string, { url: string; text: string; at: number }>();
+  for (const c of convs) {
+    for (const m of await db.list<ChatMessage>(`msg:${c.id}`)) {
+      if (m.role !== "assistant") continue;
+      for (const hit of m.content.matchAll(/\[([^\]]{1,120})\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?])/g)) {
+        const url = hit[2] ?? hit[3];
+        if (!url || seen.has(url)) continue;
+        seen.set(url, { url, text: hit[1] ?? new URL(url).hostname, at: m.createdAt });
+      }
+    }
+  }
+  return [...seen.values()].sort((a, b) => b.at - a.at).slice(0, 40);
+}
+
+/** Everything the bot made or pointed you to: pages, shared files, links. */
+function LibraryTab({ bot }: { bot: Bot }) {
+  const pages = useApp(useShallow((s) => s.pages.filter((p) => p.botId === bot.id)));
+  const files = useApp(useShallow((s) => s.files.filter((f) => f.botId === bot.id)));
+  const [links, setLinks] = useState<{ url: string; text: string; at: number }[] | null>(null);
+  useEffect(() => {
+    void recentLinks(bot.id).then(setLinks);
+  }, [bot.id]);
+  return (
+    <div className="form">
+      <h3>Pages</h3>
+      {pages.length ? (
+        <ul className="list">
+          {pages.map((p) => (
+            <li key={p.id}>
+              <button className="list-main list-button" onClick={() => openPage(p.id)}>
+                <strong>{p.title}</strong>
+                <span className="muted small">
+                  {p.editedByUser ? "Edited by you" : "Written"} {timeAgo(p.updatedAt)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">No pages yet. Ask {bot.name} to write one, like a report or a plan you can edit.</p>
+      )}
+      <h3>Files</h3>
+      {files.length ? (
+        <ul className="list">
+          {files.map((f) => (
+            <li key={f.id}>
+              <button className="list-main list-button" onClick={() => openFile(f.id)}>
+                <strong>{f.name}</strong>
+                <span className="muted small">
+                  {f.kind === "slides" ? "Slide deck · " : ""}
+                  {f.size !== undefined ? `${formatBytes(f.size)} · ` : ""}
+                  {timeAgo(f.createdAt)}
+                </span>
+              </button>
+              <IconButton label="Remove from the Library" onClick={() => void forgetSharedFile(f.id)}>
+                <Trash2 size={15} />
+              </IconButton>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">Files {bot.name} shares with you show up here.</p>
+      )}
+      <h3>Links</h3>
+      {links === null ? (
+        <p className="muted small">Looking through recent chats…</p>
+      ) : links.length ? (
+        <ul className="list">
+          {links.map((l) => (
+            <li key={l.url}>
+              <a className="list-main" href={l.url} target="_blank" rel="noreferrer noopener">
+                <span>{l.text}</span>
+                <span className="muted small mono">{l.url.length > 70 ? `${l.url.slice(0, 70)}…` : l.url}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">No links in recent chats.</p>
+      )}
     </div>
   );
 }

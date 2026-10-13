@@ -35,6 +35,10 @@ export function startPush() {
       void sendPush(`${bot.name} needs your approval`, e.summary, 4).catch((err) => console.warn("push failed:", err));
       return;
     }
+    if (e.type === "input") {
+      void sendPush(`${bot.name} has a question for you`, e.form.title, 4).catch((err) => console.warn("push failed:", err));
+      return;
+    }
     if (e.type !== "run-end" || e.outcome === "stopped") return;
     if (!e.routineId && Date.now() - e.startedAt < LONG_RUN_MS) return;
     const last = [...messagesOf(e.conversationId)].reverse().find((m) => m.role === "assistant");

@@ -21,17 +21,20 @@ none of its code, assets or branding are used. Lantern is not affiliated with xA
 
 | | |
 |---|---|
-| 🤖 **Bots** | Name, tagline, instructions, a generated character avatar (shape, color, eyes, mouth, badge), per-bot model and temperature |
-| 🧩 **Templates** | 12 ready-made bots: research scout, code pilot, morning brief, writing partner, data wrangler, sysadmin sidekick, study coach, planner… |
-| 💬 **Chat** | Streaming replies, reasoning ("thinking") display, Markdown, syntax-highlighted code, KaTeX math, Mermaid diagrams, image + text attachments, edit & resend, regenerate |
+| 🤖 **Bots** | Name, tagline, instructions, a drawn character avatar (shape, color, eyes, mouth, badge) that a bot can change itself or draw from a description, per-bot model and temperature, sidebar sections like Work and Home |
+| 🧩 **Templates** | 53 ready-made bots in 16 categories, from research and code to sales, support, finance and home. Share any bot as a link: the template travels inside the link, so nothing is uploaded, and it never carries secrets, memories or chats |
+| 💬 **Chat** | Streaming replies, reasoning ("thinking") display, Markdown, syntax-highlighted code, KaTeX math, Mermaid diagrams, attachments (images, text, PDF, Word, Excel, PowerPoint, iPhone HEIC photos), edit & resend, regenerate, quote a selection (Ctrl+L), `:emoji:` shortcodes, Ctrl+K search over bots, chats, pages and settings. Long chats get a running summary instead of losing their start |
+| 📝 **Forms** | A bot asks several questions at once (choices, checkboxes, text, numbers, dates, secrets). Secret answers are saved as the bot's secrets and the model only ever sees their names. One-question forms work in Telegram too |
+| ✅ **Plans & goals** | Bots keep a checklist above the chat for work with several steps. Give one a goal and it keeps going until it's done or it needs you |
+| 📄 **Pages & files** | Bots write pages you can read, edit and save, make slide decks (.pptx), and share files to the bot's Library. Previews for PDF, Word, Excel, CSV, PowerPoint, HTML, images and HEIC; bots read documents in their workspace |
 | 🛠️ **Tools** | Files (read / write / edit / find / grep / delete), terminal (desktop), web search & fetch (optionally through your own Firecrawl, with site maps and crawls), memory, skills, routines, chat-history search |
 | 👥 **Subagents** | A bot hands self-contained tasks to helpers that work on their own and report back, several in parallel; isolated ones get a folder (and on the hub, a sandbox) of their own |
 | 🤝 **Bots working together** | A bot asks another for help or hands it a whole task; a primary bot coordinates the rest and checks in each morning with work it could take off your plate |
 | 🌐 **Browser** | On the hub, each bot has its own headless browser for sites that need clicking or signing in; watch it live and take over from any device |
 | ✉️ **Email** | Give a bot its own inbox (IMAP/SMTP): it reads and answers mail, and new mail can start a routine |
 | 📲 **Telegram & push** | Talk to your bots from Telegram (text, photos, voice notes, approval buttons); phone notifications through ntfy |
-| 🔌 **Plugins (MCP)** | Model Context Protocol servers over stdio (desktop) or Streamable HTTP; secrets for env vars and headers |
-| 🛡️ **Approvals** | *Ask first*, *Auto-review* (an LLM judges each action) or *Auto-approve*, plus allow/deny rules ("Always allow `git status`") |
+| 🔌 **Plugins (MCP)** | Model Context Protocol servers over stdio (desktop) or Streamable HTTP; secrets for env vars and headers. Sign in to apps like Notion, Linear, Atlassian, Sentry and Zapier with one click (OAuth, through your hub) |
+| 🛡️ **Approvals** | *Ask first*, *Auto-review* (an LLM judges each action) or *Auto-approve*, plus allow/deny rules ("Always allow `git status`") for every bot or one, for good, for an hour or until tomorrow. Commands that could wreck the machine (wiping a disk, deleting system folders, piping a download into a shell) always ask |
 | 🧠 **Memories** | Bots remember facts you tell them; view and delete them any time |
 | 📚 **Skills** | Reusable instruction packs; private per bot or shared; import `SKILL.md` files |
 | ⏰ **Routines** | "Every weekday at 8:00, brief me on…": on a schedule, when a webhook is called (GitHub, Home Assistant, a script), or when mail arrives |
@@ -157,7 +160,14 @@ exercise the fallback).
 src/                     React + TypeScript UI (shared by all platforms)
   lib/agent.ts           agent loop: stream → tool calls → approvals → results → repeat
   lib/llm.ts             OpenAI-compatible client (SSE, tool-call assembly, <think> splitting)
-  lib/approval.ts        approval engine (modes, rules, read-only command classifier, auto-review)
+  lib/approval.ts        approval engine (modes, rules, shell parser, read-only and catastrophic
+                         command checks, auto-review)
+  lib/forms.ts           forms in the chat (ask_user)
+  lib/planning.ts        plans, goals and long-chat summaries
+  lib/pages.ts           pages, shared files, slide decks, reading documents
+  lib/documents.ts       PDF, Word, Excel, PowerPoint, CSV and HEIC readers
+  lib/oauth.ts           sign-in to MCP apps (discovery, dynamic registration, PKCE, refresh)
+  lib/share.ts           bot templates as links
   lib/mcp.ts             MCP client (stdio + Streamable HTTP)
   lib/tools.ts           built-in tools
   lib/routines.ts        scheduler

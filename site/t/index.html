@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Lantern bot template</title>
+<meta name="description" content="Someone shared a Lantern bot with you. Add your own copy to Lantern, the open-source app for AI bots on models you run.">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="../img/lantern.svg">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="../"><img src="../img/lantern.svg" alt="" width="28" height="28">Lantern</a>
+  <nav>
+    <a href="../#download">Download</a>
+    <a href="https://github.com/exYze/lantern">Source</a>
+  </nav>
+</header>
+
+<main class="template-page">
+  <p class="stamp">A bot someone shared with you</p>
+  <div class="template-head">
+    <span class="template-mark" id="mark" aria-hidden="true"></span>
+    <div>
+      <h1 id="name">Reading the template…</h1>
+      <p class="lede" id="tagline"></p>
+    </div>
+  </div>
+  <p id="error" class="template-error" hidden></p>
+
+  <section id="details" hidden>
+    <h2>How it works</h2>
+    <p class="template-instructions" id="instructions"></p>
+    <div class="template-cols">
+      <div>
+        <h3>Tools it uses</h3>
+        <ul id="tools"></ul>
+      </div>
+      <div id="skills-box" hidden>
+        <h3>Skills</h3>
+        <ul id="skills"></ul>
+      </div>
+      <div id="routines-box" hidden>
+        <h3>Routines (they arrive paused)</h3>
+        <ul id="routines"></ul>
+      </div>
+    </div>
+
+    <h2>Add it to your Lantern</h2>
+    <ol class="template-steps">
+      <li><a href="../#download">Install Lantern</a> if you haven't, and connect it to a model server.</li>
+      <li>Open <b>Templates</b> and choose <b>Add from a link</b>.</li>
+      <li>Paste this page's address and create the bot. It uses your own model and asks before risky actions.</li>
+    </ol>
+    <p><button class="btn" id="copy" type="button">Copy this link</button> <span id="copied" class="quiet" hidden>Copied.</span></p>
+    <p class="quiet">The template lives in this page's address. Nothing about it is stored on any server, and it never carries anyone's secrets, memories or chats.</p>
+  </section>
+</main>
+
+<script src="t.js"></script>
+</body>
+</html>

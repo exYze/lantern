@@ -1,7 +1,7 @@
 // The agent loop: stream a reply, run the tool calls it asks for (subject to the
 // approval engine), feed results back, repeat until the model answers in text.
 
-import { decide, parseReview, REVIEW_SYSTEM_PROMPT, rulePatternForCommand } from "./approval";
+import { decide, parseReview, REVIEW_SYSTEM_PROMPT, ruleForAnswer, rulePatternForCommand } from "./approval";
 import { hubConnection, hubToolInfo, usesHub, type HubSandbox, type HubToolInfo } from "./hub";
 import { chatCompletion, complete, LlmError, type OAContentPart, type OAMessage, type OATool } from "./llm";
 import { emitAgentEvent, type RunOutcome } from "./events";
@@ -26,6 +26,10 @@ import {
   workspaceFor,
 } from "./store";
 import { DELEGATE_TOOL, MAX_PARALLEL_SUBAGENTS } from "./subagents";
+import { UPDATE_PROFILE_TOOL } from "./avatar";
+import { PAGE_TOOLS } from "./pages";
+import { ASK_USER_TOOL } from "./forms";
+import { afterSummary, goalNudge, MAX_GOAL_NUDGES, PLANNING_TOOLS, planLines, summarizeIfLong } from "./planning";
 import { ASK_BOT_TOOL, teamFor } from "./team";
 import { builtinToolsFor, platformLabel, riskOf, skillsForBot, toolEnabled, type ToolContext, type ToolDef } from "./tools";
 import type { Attachment, Bot, ChatMessage, Provider, ToolCall } from "./types";
@@ -119,6 +123,10 @@ export async function toolsFor(bot: Bot, workspace: string, withhold: { files?: 
   const tools = builtinToolsFor(bot).filter((t) => !(withhold.files && t.group === "files") && !(withhold.shell && t.group === "shell"));
   if (toolEnabled(bot, "subagents")) tools.push(DELEGATE_TOOL);
   if (toolEnabled(bot, "bots") && teamFor(bot).length) tools.push(ASK_BOT_TOOL);
+  if (toolEnabled(bot, "forms")) tools.push(ASK_USER_TOOL);
+  if (toolEnabled(bot, "planning")) tools.push(...PLANNING_TOOLS);
+  if (toolEnabled(bot, "profile")) tools.push(UPDATE_PROFILE_TOOL);
+  if (toolEnabled(bot, "pages")) tools.push(...PAGE_TOOLS.filter((t) => !t.available || t.available(bot)));
   const mcpErrors: string[] = [];
   const servers = useApp.getState().mcpServers.filter((s) => s.enabled && bot.mcpServerIds.includes(s.id));
   await Promise.all(
@@ -239,6 +247,8 @@ export function buildSystemPrompt(
     lines.push("", "# Skills", "Before a task that matches one of these, call `load_skill` with its name and follow it:");
     for (const s of skills) lines.push(`- ${s.name}: ${s.description}`);
   }
+
+  lines.push(...planLines(conv));
 
   lines.push("", "# How to work");
   if (useTools) {
@@ -413,15 +423,27 @@ export async function runAgent(conversationId: string, opts: RunOptions = {}): P
     const secretValues = Object.values(env).filter((v) => v.length >= 4);
     const { provider: initialProvider, model } = resolveModel(bot);
     const { tools, mcpErrors } = await toolsFor(bot, workspace, { files: place.noFiles, shell: place.noShell });
-    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal, remote, confine: place.confine, sandbox: place.sandbox, tools, chain: [...(opts.chain ?? []), bot.id] };
+    const ctx: ToolContext = { bot, conversationId, workspace, env, signal: abort.signal, remote, confine: place.confine, sandbox: place.sandbox, tools, chain: [...(opts.chain ?? []), bot.id], secretValues };
     const settings = useApp.getState().settings;
 
-    for (let step = 0; step < settings.maxSteps; step++) {
+    const convNow = () => useApp.getState().conversations.find((c) => c.id === conversationId);
+    // With a goal, the bot gets more room to finish it.
+    const stepLimit = () => (convNow()?.goal?.status === "active" ? settings.maxSteps * 4 : settings.maxSteps);
+    let nudges = 0;
+    for (let step = 0; step < stepLimit(); step++) {
       if (abort.signal.aborted) break;
       const provider = useApp.getState().providers.find((p) => p.id === initialProvider.id) ?? initialProvider;
       const useTools = tools.length > 0 && !(provider.noToolModels ?? []).includes(model);
-      const system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo, place, conversationId);
-      const history = toOpenAIHistory(messagesOf(conversationId), Math.max(2000, settings.contextTokens - estimateTokens(system) - 1500), useTools);
+      let system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo, place, conversationId);
+      let budget = Math.max(2000, settings.contextTokens - estimateTokens(system) - 1500);
+      // A chat that outgrew the budget: summarize its older part rather than drop it.
+      const summaryBefore = convNow()?.summary;
+      await summarizeIfLong(conversationId, messagesOf(conversationId), budget, provider, model, abort.signal);
+      if (convNow()?.summary !== summaryBefore) {
+        system = buildSystemPrompt(bot, tools, useTools, workspace, mcpErrors, hubInfo, place, conversationId);
+        budget = Math.max(2000, settings.contextTokens - estimateTokens(system) - 1500);
+      }
+      const history = toOpenAIHistory(afterSummary(messagesOf(conversationId), convNow()), budget, useTools);
 
       const assistant: ChatMessage = { id: uid("msg"), conversationId, role: "assistant", content: "", status: "streaming", model, createdAt: Date.now(), routineId: opts.routineId };
       await appendMessage(assistant, false);
@@ -484,7 +506,16 @@ export async function runAgent(conversationId: string, opts: RunOptions = {}): P
         true,
       );
       current = null;
-      if (!toolCalls.length) break;
+      if (!toolCalls.length) {
+        // An unfinished goal: nudge the bot to keep going, a few times at most.
+        const c = convNow();
+        if (c?.goal?.status === "active" && nudges < MAX_GOAL_NUDGES && step < stepLimit() - 1 && !abort.signal.aborted) {
+          nudges++;
+          await appendMessage({ id: uid("msg"), conversationId, role: "user", content: goalNudge(c), via: "goal", createdAt: Date.now(), routineId: opts.routineId });
+          continue;
+        }
+        break;
+      }
 
       const lastUser = [...messagesOf(conversationId)].reverse().find((m) => m.role === "user")?.content ?? "";
       const callEnv: CallEnv = { provider, model, lastUser, secretValues, routineId: opts.routineId };
@@ -495,8 +526,8 @@ export async function runAgent(conversationId: string, opts: RunOptions = {}): P
         await mapLimit(toolCalls.slice(i, j), MAX_PARALLEL_SUBAGENTS, (call) => runToolCall(call, assistant.id, tools, ctx, callEnv));
         i = j;
       }
-      if (step === settings.maxSteps - 1) {
-        toast(`${bot.name} reached the limit of ${settings.maxSteps} steps. Say “continue” to keep going.`, "info");
+      if (step === stepLimit() - 1) {
+        toast(`${bot.name} reached the limit of ${stepLimit()} steps. Say “continue” to keep going.`, "info");
       }
     }
   } catch (e) {
@@ -619,7 +650,7 @@ export async function executeToolCall(
 
   const settings = useApp.getState().settings;
   const mode = bot.approvalMode ?? settings.approvalMode;
-  let decision = decide({ toolName: tool!.name, risk: riskOf(tool!, args), args, mode, rules: settings.approvalRules, workspace: ctx.workspace });
+  let decision = decide({ toolName: tool!.name, risk: riskOf(tool!, args), args, mode, rules: settings.approvalRules, workspace: ctx.workspace, botId: bot.id });
   let via: ToolCall["approval"];
 
   if (decision.action === "review") {
@@ -636,7 +667,7 @@ export async function executeToolCall(
   } else {
     if (decision.action === "ask") {
       // Stored, so other devices (and the hub's runner) see that it's waiting.
-      update({ status: "awaiting-approval" }, true);
+      update({ status: "awaiting-approval", ...(decision.warning ? { warning: decision.warning } : {}) }, true);
       const summary = tool!.summarize(args).slice(0, 160);
       if (env.routineId || !appVisible()) void notify(`${bot.name} needs your approval`, summary);
       emitAgentEvent({ type: "approval", conversationId: ctx.conversationId, botId: bot.id, callId: call.id, summary });
@@ -646,9 +677,9 @@ export async function executeToolCall(
         update({ status: "denied", result }, true);
         return result;
       }
-      if (answer === "always") {
-        await addApprovalRule({ tool: tool!.name, pattern: tool!.name === "shell" ? rulePatternForCommand(String(args.command ?? "")) : "", decision: "allow" });
-      }
+      // A command that always asks (it could wreck the machine) never gets a standing rule.
+      const rule = decision.warning ? null : ruleForAnswer(answer, tool!.name, tool!.name === "shell" ? rulePatternForCommand(String(args.command ?? "")) : "", bot.id);
+      if (rule) await addApprovalRule(rule);
       via = "user";
     } else {
       via ??= decision.via;
@@ -656,7 +687,7 @@ export async function executeToolCall(
 
     update({ status: "running", approval: via, startedAt: Date.now() });
     try {
-      result = await tool!.run(args, { ...ctx, onProgress: update });
+      result = await tool!.run(args, { ...ctx, onProgress: update, callId: call.id });
     } catch (e) {
       status = "error";
       result = signal.aborted ? "Cancelled by the user." : `Error: ${(e as Error)?.message ?? String(e)}`;

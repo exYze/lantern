@@ -1,6 +1,6 @@
 [package]
 name = "lantern-tools"
-version = "0.5.0"
+version = "0.6.0"
 description = "File and shell tools shared by the Lantern app and Lantern Hub"
 license = "MIT"
 edition = "2021"
@@ -8,6 +8,7 @@ rust-version = "1.80"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros", "rt"] }
 ignore = "0.4"
 globset = "0.4"

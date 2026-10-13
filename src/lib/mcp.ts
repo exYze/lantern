@@ -1,5 +1,6 @@
 // Minimal Model Context Protocol client: stdio (desktop) and Streamable HTTP.
 
+import { accessToken } from "./oauth";
 import { httpRequest, mcpStdio, platform, secrets } from "./platform";
 import { SseParser } from "./sse";
 import type { McpServer } from "./types";
@@ -142,19 +143,25 @@ class HttpTransport implements Transport {
   constructor(
     private readonly url: string,
     private readonly headers: Record<string, string>,
+    /** For signed-in servers: a fresh access token (forced to renew after a 401). */
+    private readonly token?: (force: boolean) => Promise<string>,
   ) {}
 
-  private async post(body: unknown, expectReply: boolean): Promise<JsonRpcResponse | null> {
+  private async post(body: unknown, expectReply: boolean, retried = false): Promise<JsonRpcResponse | null> {
     const headers: Record<string, string> = {
       ...this.headers,
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
     };
+    if (this.token) headers.Authorization = `Bearer ${await this.token(retried)}`;
     if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
     if (this.negotiatedVersion) headers["MCP-Protocol-Version"] = this.negotiatedVersion;
     const res = await httpRequest({ method: "POST", url: this.url, headers, body: JSON.stringify(body), timeoutMs: REQUEST_TIMEOUT_MS });
     const sid = res.headers["mcp-session-id"];
     if (sid) this.sessionId = sid;
+    // A rejected token: renew it once and try again.
+    if (res.status === 401 && this.token && !retried) return this.post(body, expectReply, true);
+    if (res.status === 401 && !this.token) throw new Error("This server wants you to sign in: use Sign in on the Plugins page, or add its key as a header.");
     if (res.status >= 400) throw new Error(`MCP HTTP ${res.status}: ${res.body.slice(0, 300)}`);
     if (!expectReply) return null;
     const id = (body as { id?: number }).id;
@@ -212,7 +219,8 @@ export class McpClient {
       await t.start(this.server);
       this.transport = t;
     } else {
-      this.transport = new HttpTransport(this.server.url ?? "", await resolveSecrets(this.server, "header"));
+      const server = this.server;
+      this.transport = new HttpTransport(server.url ?? "", await resolveSecrets(server, "header"), server.oauth ? (force) => accessToken(server, force) : undefined);
     }
     const init = await this.transport.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
@@ -267,7 +275,7 @@ export const mcpStatus = new Map<string, { ok: boolean; error?: string; toolCoun
 
 /** Connects (once) and returns a client; failed connections are retried on the next call. */
 export function getMcpClient(server: McpServer, workspace: string): Promise<McpClient> {
-  const key = `${server.id}:${JSON.stringify([server.command, server.args, server.url, server.envKeys, server.headerKeys])}`;
+  const key = `${server.id}:${JSON.stringify([server.command, server.args, server.url, server.envKeys, server.headerKeys, server.oauth?.clientId])}`;
   let p = clients.get(key);
   if (!p) {
     const client = new McpClient(server, workspace);

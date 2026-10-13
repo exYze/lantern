@@ -36,6 +36,10 @@ export interface ToolContext {
   tools?: ToolDef[];
   /** Bots in this ask_bot chain, outermost first; the last is this bot. */
   chain?: string[];
+  /** The id of the tool call being run. */
+  callId?: string;
+  /** Secret values to keep out of tool output; tools that learn new secrets add theirs. */
+  secretValues?: string[];
   /** Reports progress of a long-running call (subagents) to its card in the chat. */
   onProgress?: (patch: Partial<ToolCall>, persist?: boolean) => void;
 }

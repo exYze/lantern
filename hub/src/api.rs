@@ -57,12 +57,23 @@ pub struct Hub {
     pair_failures: Mutex<(i64, u32)>,
     /// Webhook calls per routine in the current minute: (window start, count).
     pub hook_calls: Mutex<HashMap<String, (i64, u32)>>,
+    /// Sign-in results waiting for the app that started them: state → (received at, result).
+    oauth_results: Mutex<HashMap<String, (i64, Value)>>,
 }
 
 impl Hub {
     pub fn new(config: Config, store: Store, tools: Tools) -> Self {
         let (events, _) = broadcast::channel(512);
-        Hub { config, store, tools, events, runner: Mutex::new(None), pair_failures: Mutex::new((0, 0)), hook_calls: Mutex::new(HashMap::new()) }
+        Hub {
+            config,
+            store,
+            tools,
+            events,
+            runner: Mutex::new(None),
+            pair_failures: Mutex::new((0, 0)),
+            hook_calls: Mutex::new(HashMap::new()),
+            oauth_results: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn runner_status(&self) -> Value {
@@ -136,6 +147,8 @@ pub fn router(hub: Shared) -> Router {
         .route("/api/v1/live", post(live))
         .route("/api/v1/notify", post(notify))
         .route("/api/v1/runner", post(runner_checkin))
+        .route("/api/v1/oauth/{state}", get(oauth_result))
+        .route("/oauth/callback", get(oauth_callback))
         .route("/api/v1/pair", post(pair))
         .route("/api/v1/me", get(me))
         .route("/api/v1/changes", get(changes))
@@ -357,6 +370,50 @@ async fn runner_checkin(State(hub): State<Shared>, headers: HeaderMap, Json(body
         let _ = hub.events.send(HubEvent::Runner(hub.runner_status()));
     }
     Ok(Json(json!({})))
+}
+
+// ------------------------------------------------------------------ sign-in for apps (OAuth)
+
+/// How long a sign-in result waits for the app to pick it up.
+const OAUTH_TTL_MS: i64 = 10 * 60_000;
+
+/// Where a service sends you back after you sign in to it from Lantern. The app
+/// that started the sign-in picks up the code with `GET /api/v1/oauth/<state>`.
+async fn oauth_callback(State(hub): State<Shared>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let state = q.get("state").cloned().unwrap_or_default();
+    let ok = q.contains_key("code") && !state.is_empty();
+    if !state.is_empty() && state.len() <= 200 {
+        let result = json!({ "code": q.get("code"), "error": q.get("error"), "errorDescription": q.get("error_description") });
+        let mut results = hub.oauth_results.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_ms();
+        results.retain(|_, (at, _)| now - *at < OAUTH_TTL_MS);
+        if results.len() < 200 {
+            results.insert(state, (now, result));
+        }
+    }
+    let (title, body) = if ok {
+        ("You're signed in", "Go back to Lantern. It finishes connecting on its own, and you can close this tab.")
+    } else {
+        ("Sign-in didn't finish", "The service didn't send Lantern a sign-in code. Go back to Lantern and try again.")
+    };
+    let page = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title} · Lantern</title><style>\
+         body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#f6f6f3;color:#191d1b;font:16px/1.5 system-ui,sans-serif}}\
+         main{{max-width:28rem;padding:32px 24px;border-top:6px solid #1f3b2f}}h1{{font-size:26px;margin:0 0 8px}}p{{margin:0;color:#5b625e}}\
+         @media (prefers-color-scheme:dark){{body{{background:#121614;color:#e6ebe7}}main{{border-color:#2f6b4f}}p{{color:#9ba59f}}}}</style></head>\
+         <body><main><h1>{title}</h1><p>{body}</p></main></body></html>"
+    );
+    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], page).into_response()
+}
+
+/// The result of a sign-in, once (it's removed when read).
+async fn oauth_result(State(hub): State<Shared>, headers: HeaderMap, Path(state): Path<String>) -> ApiResult<Json<Value>> {
+    auth(&hub, &headers)?;
+    let mut results = hub.oauth_results.lock().unwrap_or_else(|e| e.into_inner());
+    match results.remove(&state) {
+        Some((at, result)) if now_ms() - at < OAUTH_TTL_MS => Ok(Json(result)),
+        _ => Err(ApiError(StatusCode::NOT_FOUND, "Not signed in yet.".into())),
+    }
 }
 
 // ------------------------------------------------------------------ tools
